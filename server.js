@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
+const { spawnSync } = require('node:child_process');
 
 const PORT = parseInt(process.env.PORT || '4747', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -43,6 +44,8 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `);
+db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+
 // migration for vaults created before folders existed
 if (!db.prepare('PRAGMA table_info(artifacts)').all().some((c) => c.name === 'folder_id')) {
   db.exec('ALTER TABLE artifacts ADD COLUMN folder_id TEXT REFERENCES folders(id)');
@@ -451,6 +454,74 @@ function seedIfEmpty() {
   } catch (e) { console.error('Seeding failed:', e.message); }
 }
 
+// ----------------------------------------------------------------- settings
+const getSetting = (k) => (db.prepare('SELECT value FROM settings WHERE key=?').get(k) || {}).value || null;
+const setSetting = (k, v) => db.prepare('INSERT OR REPLACE INTO settings (key,value) VALUES(?,?)').run(k, String(v));
+
+// ----------------------------------------------------------------- git sync
+function git(args) {
+  const r = spawnSync('git', args, { cwd: DATA_DIR, encoding: 'utf8', timeout: 30000 });
+  return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
+}
+
+function gitStatus() {
+  const remote = getSetting('git_remote') || '';
+  const branch = getSetting('git_branch') || 'main';
+  const lastSync = getSetting('git_last_sync') || null;
+  const initialized = git(['rev-parse', '--git-dir']).ok;
+  let dirty = false, lastCommit = null;
+  if (initialized) {
+    dirty = git(['status', '--porcelain']).out.length > 0;
+    const log = git(['log', '-1', '--format=%h %s']);
+    if (log.ok && log.out) {
+      const sp = log.out.indexOf(' ');
+      lastCommit = { hash: log.out.slice(0, sp), message: log.out.slice(sp + 1) };
+    }
+  }
+  return { initialized, remote, branch, lastSync, dirty, lastCommit };
+}
+
+function gitSync(push) {
+  const remote = getSetting('git_remote') || '';
+  const branch = getSetting('git_branch') || 'main';
+
+  if (!git(['rev-parse', '--git-dir']).ok) {
+    const r = git(['init']);
+    if (!r.ok) throw httpError(500, 'git init failed: ' + r.err);
+    git(['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
+    git(['config', 'user.email', 'openartifact@localhost']);
+    git(['config', 'user.name', 'OpenArtifact']);
+    fs.writeFileSync(path.join(DATA_DIR, '.gitignore'), '*.db-shm\n*.db-wal\n', 'utf8');
+  } else {
+    git(['config', 'user.email', 'openartifact@localhost']);
+    git(['config', 'user.name', 'OpenArtifact']);
+  }
+
+  if (remote) {
+    const remotes = git(['remote']).out.split('\n').filter(Boolean);
+    if (remotes.includes('origin')) git(['remote', 'set-url', 'origin', remote]);
+    else git(['remote', 'add', 'origin', remote]);
+  }
+
+  git(['add', '-A']);
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const commit = git(['commit', '-m', `backup: ${ts}`]);
+  const noChanges = (commit.out + commit.err).toLowerCase().includes('nothing to commit');
+  if (!commit.ok && !noChanges) throw httpError(500, 'git commit failed: ' + (commit.err || commit.out));
+
+  let pushed = false, pushError = null;
+  if (push && remote) {
+    const p = git(['push', '-u', 'origin', branch]);
+    pushed = p.ok;
+    if (!p.ok) pushError = p.err || p.out;
+  } else if (push && !remote) {
+    pushError = 'No remote URL configured';
+  }
+
+  setSetting('git_last_sync', new Date().toISOString());
+  return { ok: true, committed: !noChanges, pushed, pushError, lastSync: getSetting('git_last_sync') };
+}
+
 // ------------------------------------------------------------------- routes
 const INDEX_HTML = path.join(__dirname, 'public', 'index.html');
 
@@ -612,6 +683,21 @@ async function handle(req, res) {
       return send(res, 200, tsxWrapperHtml(a.title, fs.readFileSync(file, 'utf8')), headers);
     }
     return send(res, 200, fs.readFileSync(file), headers);
+  }
+
+  // Git sync
+  if (p === '/api/git/status' && method === 'GET') return send(res, 200, gitStatus());
+  if (p === '/api/git/config' && method === 'POST') {
+    let j = {};
+    try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
+    if (j.remote !== undefined) setSetting('git_remote', j.remote.trim());
+    if (j.branch !== undefined) setSetting('git_branch', j.branch.trim() || 'main');
+    return send(res, 200, gitStatus());
+  }
+  if (p === '/api/git/sync' && method === 'POST') {
+    let j = {};
+    try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
+    return send(res, 200, gitSync(!!j.push));
   }
 
   throw httpError(404, 'Not found');
