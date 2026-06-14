@@ -784,6 +784,19 @@ async function gitSaveConfig() {
 }
 
 async function gitSync(push) {
+  const remote = $('#gitRemote').value.trim();
+  const branch = $('#gitBranch').value.trim() || 'main';
+
+  if (push && !remote) {
+    $('#gitResult').style.color = 'var(--danger)';
+    $('#gitResult').textContent = 'Enter a Remote URL before pushing.';
+    $('#gitRemote').focus();
+    return;
+  }
+
+  // Always persist current form values before syncing
+  await api('/api/git/config', jsonReq('POST', { remote, branch })).catch(() => {});
+
   const btn = push ? $('#gitPushBtn') : $('#gitCommitBtn');
   btn.disabled = true;
   const orig = btn.textContent;
