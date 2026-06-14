@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenArtifact</title>
+<style>
+  :root {
+    --bg: #0e1014; --panel: #161a21; --panel-2: #1d222c; --border: #2a3040;
+    --text: #e6e9ef; --muted: #8b93a5; --accent: #7c9aff; --accent-2: #5b7cfa;
+    --danger: #ff6b6b; --ok: #4ade80; --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  button { font: inherit; cursor: pointer; }
+  input, textarea, select { font: inherit; color: var(--text); }
+
+  header {
+    position: sticky; top: 0; z-index: 20; background: rgba(14,16,20,.92);
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+    padding: 14px 24px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  }
+  .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; letter-spacing: .2px; }
+  .logo .mark {
+    width: 26px; height: 26px; border-radius: 7px; flex: none;
+    background: linear-gradient(135deg, var(--accent), #b07cff);
+    display: grid; place-items: center; color: #0e1014; font-size: 14px; font-weight: 800;
+  }
+  .logo small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 2px; }
+
+  #search {
+    flex: 1; min-width: 180px; max-width: 420px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 13px; outline: none;
+  }
+  #search:focus { border-color: var(--accent-2); }
+
+  .btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 14px; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent-2); }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .btn.danger { color: var(--danger); }
+  .btn.danger:hover { border-color: var(--danger); }
+
+  /* ------------------------------------------------ layout: sidebar + main */
+  .app { display: flex; align-items: flex-start; }
+  aside {
+    width: 240px; flex: none; position: sticky; top: 63px;
+    height: calc(100vh - 63px); overflow-y: auto;
+    border-right: 1px solid var(--border); padding: 16px 10px 30px;
+  }
+  .side-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 8px 8px; color: var(--muted); font-size: 12px;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .side-head button {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; width: 22px; height: 22px; line-height: 1;
+  }
+  .side-head button:hover { color: var(--accent); border-color: var(--accent-2); }
+
+  .frow {
+    display: flex; align-items: center; gap: 4px; padding: 5px 8px;
+    border-radius: 8px; cursor: pointer; color: var(--text); position: relative;
+    border: 1px solid transparent; user-select: none;
+  }
+  .frow:hover { background: var(--panel); }
+  .frow.active { background: var(--panel-2); border-color: var(--border); }
+  .frow.droptarget { border-color: var(--accent); background: rgba(91,124,250,.12); }
+  .frow .twisty {
+    width: 16px; flex: none; text-align: center; color: var(--muted);
+    font-size: 10px; transition: transform .12s;
+  }
+  .frow .twisty.open { transform: rotate(90deg); }
+  .frow .icon { flex: none; opacity: .8; }
+  .frow .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .frow .count { color: var(--muted); font-size: 12px; }
+  .frow .acts { display: none; gap: 2px; }
+  .frow:hover .acts { display: flex; }
+  .frow:hover .count { display: none; }
+  .frow .acts button {
+    background: none; border: 0; color: var(--muted); padding: 0 3px; font-size: 12px; border-radius: 4px;
+  }
+  .frow .acts button:hover { color: var(--accent); }
+  .frow .acts button.del:hover { color: var(--danger); }
+
+  main { flex: 1; min-width: 0; max-width: 1280px; padding: 20px 24px 80px; }
+  #viewTitle { margin: 0 0 14px; font-size: 17px; font-weight: 600; color: var(--muted); }
+  #viewTitle b { color: var(--text); }
+
+  /* import strip */
+  .import-strip { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; margin-bottom: 18px; }
+  #pasteBox {
+    flex: 2; min-width: 260px; min-height: 46px; max-height: 46px; resize: none;
+    background: var(--panel); border: 1.5px dashed var(--border); border-radius: var(--radius);
+    padding: 11px 14px; outline: none; transition: .15s;
+  }
+  #pasteBox:focus { border-color: var(--accent); max-height: 160px; min-height: 110px; }
+  #pasteBox::placeholder { color: var(--muted); }
+  .url-group { flex: 1; min-width: 240px; display: flex; }
+  #urlInput {
+    flex: 1; background: var(--panel); border: 1px solid var(--border);
+    border-right: 0; border-radius: var(--radius) 0 0 var(--radius); padding: 0 14px; outline: none; min-width: 0;
+  }
+  #urlInput:focus { border-color: var(--accent-2); }
+  .url-group .btn { border-radius: 0 var(--radius) var(--radius) 0; }
+
+  .hint { color: var(--muted); font-size: 13px; margin: -8px 0 16px; }
+  .hint kbd {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 6px; font-size: 12px; font-family: inherit;
+  }
+
+  #tagBar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  .chip {
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 4px 12px; font-size: 13px;
+  }
+  .chip.active { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .chip:hover { border-color: var(--accent-2); }
+
+  /* grid */
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; cursor: pointer; transition: border-color .15s, transform .15s, opacity .15s;
+    display: flex; flex-direction: column;
+  }
+  .card:hover { border-color: var(--accent-2); transform: translateY(-2px); }
+  .card.dragging { opacity: .45; }
+  .preview { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: #fff; flex: none; }
+  .preview iframe {
+    width: 1024px; height: 768px; border: 0; transform-origin: 0 0; pointer-events: none; background: #fff;
+  }
+  .preview .shield { position: absolute; inset: 0; }
+  .card-body { padding: 12px 14px 13px; display: flex; flex-direction: column; gap: 6px; }
+  .card-title { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card-meta .floc { color: var(--accent); }
+  .card-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tag { background: var(--panel-2); border-radius: 5px; padding: 1px 7px; font-size: 11.5px; color: var(--accent); }
+  .kind-badge {
+    background: rgba(176,124,255,.16); color: #b07cff; border-radius: 5px;
+    padding: 1px 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; flex: none;
+  }
+
+  #empty { color: var(--muted); text-align: center; padding: 80px 20px; display: none; }
+  #empty h2 { color: var(--text); font-weight: 600; }
+
+  /* drag overlay (external files only) */
+  #dropOverlay {
+    position: fixed; inset: 0; z-index: 100; display: none; place-items: center;
+    background: rgba(14,16,20,.85); backdrop-filter: blur(3px); pointer-events: none;
+  }
+  #dropOverlay.on { display: grid; }
+  #dropOverlay .box {
+    border: 2.5px dashed var(--accent); border-radius: 20px; padding: 60px 90px;
+    font-size: 22px; font-weight: 600; color: var(--accent);
+  }
+
+  /* modal */
+  #modal {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: rgba(10,12,16,.78); backdrop-filter: blur(4px); padding: 28px;
+  }
+  #modal.on { display: flex; }
+  .modal-card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    flex: 1; display: flex; overflow: hidden; min-height: 0;
+  }
+  .modal-view { flex: 1; min-width: 0; background: #fff; }
+  .modal-view iframe { width: 100%; height: 100%; border: 0; }
+  .modal-side {
+    width: 320px; flex: none; border-left: 1px solid var(--border);
+    padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+  }
+  .modal-side label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .modal-side input, .modal-side textarea, .modal-side select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; outline: none;
+  }
+  .modal-side :is(input, textarea, select):focus { border-color: var(--accent-2); }
+  .modal-side textarea { min-height: 90px; resize: vertical; }
+  .modal-side .meta { font-size: 12px; color: var(--muted); line-height: 1.7; word-break: break-all; }
+  .modal-side .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+
+  #toasts { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--ok);
+    border-radius: 9px; padding: 10px 16px; font-size: 14px; max-width: 360px;
+    animation: slide .2s ease-out;
+  }
+  .toast.err { border-left-color: var(--danger); }
+  @keyframes slide { from { transform: translateX(30px); opacity: 0; } }
+
+  @media (max-width: 820px) {
+    .app { flex-direction: column; }
+    aside { width: 100%; height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--border); }
+    .modal-card { flex-direction: column; }
+    .modal-side { width: auto; border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="mark">⌬</span>OpenArtifact <small>your HTML artifact vault</small></div>
+  <input id="search" type="search" placeholder="Search all folders — title, notes, tags…">
+  <button class="btn" id="uploadBtn">⬆ Upload files</button>
+  <input type="file" id="filePicker" accept=".html,.htm,.tsx,.jsx,text/html" multiple hidden>
+</header>
+
+<div class="app">
+  <aside>
+    <div class="side-head">Folders <button id="newFolderBtn" title="New folder">＋</button></div>
+    <div id="folderList"></div>
+  </aside>
+
+  <main>
+    <h2 id="viewTitle"></h2>
+    <div class="import-strip">
+      <textarea id="pasteBox" placeholder="✂ Paste raw HTML here (or anywhere on the page) — imports into the current folder"></textarea>
+      <div class="url-group">
+        <input id="urlInput" type="url" placeholder="https://… import from URL">
+        <button class="btn primary" id="urlBtn">Import</button>
+      </div>
+    </div>
+    <p class="hint">Drag &amp; drop <kbd>.html</kbd> / <kbd>.tsx</kbd> files anywhere, paste HTML or React/TSX with <kbd>Ctrl/⌘ V</kbd>, or import from a URL — new artifacts land in the folder you're viewing. Drag a card onto a folder to move it.</p>
+
+    <div id="tagBar"></div>
+    <div id="grid"></div>
+    <div id="empty"><h2>Nothing here</h2>Drop an .html file, paste some HTML, or drag artifacts into this folder.</div>
+  </main>
+</div>
+
+<div id="dropOverlay"><div class="box">Drop .html files to import</div></div>
+
+<div id="modal">
+  <div class="modal-card">
+    <div class="modal-view"><iframe id="modalFrame" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock"></iframe></div>
+    <div class="modal-side">
+      <div>
+        <label>Title</label>
+        <input id="mTitle">
+      </div>
+      <div>
+        <label>Folder</label>
+        <select id="mFolder"></select>
+      </div>
+      <div>
+        <label>Tags <span style="opacity:.6">(comma-separated)</span></label>
+        <input id="mTags" placeholder="dashboard, claude, wip">
+      </div>
+      <div>
+        <label>Notes</label>
+        <textarea id="mNotes" placeholder="What is this? Where did it come from?"></textarea>
+      </div>
+      <div class="meta" id="mMeta"></div>
+      <div class="spacer"></div>
+      <div class="row">
+        <button class="btn primary" id="mSave">Save</button>
+        <button class="btn" id="mFullscreen">⛶ Full screen</button>
+        <button class="btn" id="mDownload">⬇ Download</button>
+      </div>
+      <div class="row">
+        <button class="btn danger" id="mDelete">Delete</button>
+        <button class="btn" id="mClose">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const state = {
+  q: '', tag: null, items: [], current: null,
+  folder: 'root',            // 'root' = Unsorted (homepage) or a folder id
+  folders: { unsorted: 0, tree: [] },
+  collapsed: new Set(),
+};
+
+// ------------------------------------------------------------------ utils
+function toast(msg, err = false) {
+  const el = document.createElement('div');
+  el.className = 'toast' + (err ? ' err' : '');
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+const jsonReq = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const fmtSize = (b) => b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const currentFolderId = () => state.folder === 'root' ? null : state.folder;
+
+function findFolder(id, nodes = state.folders.tree) {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const hit = findFolder(id, n.children);
+    if (hit) return hit;
+  }
+  return null;
+}
+function flattenFolders(nodes = state.folders.tree, depth = 0, out = []) {
+  for (const n of nodes) { out.push({ ...n, depth }); flattenFolders(n.children, depth + 1, out); }
+  return out;
+}
+function folderPathName(id) {
+  const segs = [];
+  (function walk(nodes, trail) {
+    for (const n of nodes) {
+      if (n.id === id) { segs.push(...trail, n.name); return true; }
+      if (walk(n.children, [...trail, n.name])) return true;
+    }
+    return false;
+  })(state.folders.tree, []);
+  return segs.join(' / ');
+}
+
+// ----------------------------------------------------------------- import
+async function importHtml(html, extra = {}) {
+  const a = await api('/api/artifacts', jsonReq('POST', { html, folder_id: currentFolderId(), ...extra }));
+  toast(`Imported “${a.title}”`);
+  return a;
+}
+async function importFiles(files) {
+  let ok = 0;
+  for (const f of files) {
+    const isTsx = /\.(tsx|jsx)$/i.test(f.name);
+    if (!isTsx && !/\.html?$/i.test(f.name) && f.type !== 'text/html') { toast(`Skipped ${f.name} (not HTML/TSX)`, true); continue; }
+    try { await importHtml(await f.text(), { source: 'file:' + f.name, kind: isTsx ? 'tsx' : undefined }); ok++; }
+    catch (e) { toast(`${f.name}: ${e.message}`, true); }
+  }
+  if (ok) refresh();
+}
+
+// drag & drop of external files (whole page); ignores internal card drags
+const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+let dragDepth = 0;
+addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  if (!isFileDrag(e)) return;
+  if (++dragDepth) $('#dropOverlay').classList.add('on');
+});
+addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  if (!isFileDrag(e)) return;
+  if (--dragDepth <= 0) { dragDepth = 0; $('#dropOverlay').classList.remove('on'); }
+});
+addEventListener('dragover', (e) => e.preventDefault());
+addEventListener('drop', (e) => {
+  e.preventDefault(); dragDepth = 0; $('#dropOverlay').classList.remove('on');
+  if (isFileDrag(e) && e.dataTransfer.files.length) importFiles([...e.dataTransfer.files]);
+});
+
+// global paste → import (when not typing in a field)
+addEventListener('paste', (e) => {
+  const t = e.target;
+  const typing = t.closest && t.closest('input, textarea, [contenteditable]') && t.id !== 'pasteBox';
+  if (typing) return;
+  const text = e.clipboardData.getData('text/plain');
+  if (!text || !(/[<>]/.test(text) || /\bexport\s+default\b/.test(text))) return;
+  e.preventDefault();
+  importHtml(text, { source: 'paste' }).then(refresh).catch((err) => toast(err.message, true));
+  if (t.id === 'pasteBox') t.value = '';
+});
+$('#pasteBox').addEventListener('input', (e) => {
+  const v = e.target.value;
+  if (v.length > 40 && (/<\w+[\s>]/.test(v) || /\bexport\s+default\b/.test(v))) {
+    e.target.value = '';
+    importHtml(v, { source: 'paste' }).then(refresh).catch((err) => toast(err.message, true));
+  }
+});
+
+$('#uploadBtn').onclick = () => $('#filePicker').click();
+$('#filePicker').onchange = (e) => { importFiles([...e.target.files]); e.target.value = ''; };
+
+$('#urlBtn').onclick = importUrl;
+$('#urlInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') importUrl(); });
+async function importUrl() {
+  const url = $('#urlInput').value.trim();
+  if (!url) return;
+  $('#urlBtn').disabled = true; $('#urlBtn').textContent = '…';
+  try {
+    const a = await api('/api/import-url', jsonReq('POST', { url, folder_id: currentFolderId() }));
+    toast(`Imported “${a.title}”`); $('#urlInput').value = ''; refresh();
+  } catch (e) { toast(e.message, true); }
+  $('#urlBtn').disabled = false; $('#urlBtn').textContent = 'Import';
+}
+
+// ----------------------------------------------------------------- folders
+$('#newFolderBtn').onclick = () => createFolderPrompt(null);
+
+async function createFolderPrompt(parentId) {
+  const name = prompt(parentId ? 'New subfolder name:' : 'New folder name:');
+  if (!name || !name.trim()) return;
+  try { await api('/api/folders', jsonReq('POST', { name: name.trim(), parent_id: parentId })); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+async function renameFolderPrompt(node) {
+  const name = prompt('Rename folder:', node.name);
+  if (!name || !name.trim() || name.trim() === node.name) return;
+  try { await api('/api/folders/' + node.id, jsonReq('PATCH', { name: name.trim() })); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+async function deleteFolderConfirm(node) {
+  if (!confirm(`Delete folder “${node.name}”?\nIts subfolders are removed; artifacts inside move to Unsorted.`)) return;
+  try {
+    const r = await api('/api/folders/' + node.id, { method: 'DELETE' });
+    toast(r.moved_to_unsorted ? `Folder deleted — ${r.moved_to_unsorted} artifact(s) moved to Unsorted` : 'Folder deleted');
+    if (state.folder === node.id) state.folder = 'root';
+    refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderFolders() {
+  const list = $('#folderList');
+  list.innerHTML = '';
+  list.appendChild(folderRow({ id: 'root', name: 'Unsorted', count: state.folders.unsorted, children: [] }, 0, true));
+  const walk = (nodes, depth) => {
+    for (const n of nodes) {
+      list.appendChild(folderRow(n, depth, false));
+      if (n.children.length && !state.collapsed.has(n.id)) walk(n.children, depth + 1);
+    }
+  };
+  walk(state.folders.tree, 0);
+}
+
+function folderRow(node, depth, isRoot) {
+  const row = document.createElement('div');
+  row.className = 'frow' + (state.folder === node.id ? ' active' : '');
+  row.style.paddingLeft = (8 + depth * 16) + 'px';
+  const hasKids = node.children.length > 0;
+  const open = !state.collapsed.has(node.id);
+  row.innerHTML = `
+    <span class="twisty ${open ? 'open' : ''}">${hasKids ? '▶' : ''}</span>
+    <span class="icon">${isRoot ? '⌂' : '🗀'}</span>
+    <span class="fname">${esc(node.name)}</span>
+    <span class="count">${node.count || ''}</span>
+    ${isRoot ? '' : `<span class="acts">
+      <button title="New subfolder">＋</button>
+      <button title="Rename">✎</button>
+      <button class="del" title="Delete">✕</button>
+    </span>`}`;
+  row.onclick = () => { state.folder = node.id; state.tag = null; $('#search').value = ''; state.q = ''; refresh(); };
+  if (hasKids) {
+    row.querySelector('.twisty').onclick = (e) => {
+      e.stopPropagation();
+      state.collapsed.has(node.id) ? state.collapsed.delete(node.id) : state.collapsed.add(node.id);
+      renderFolders();
+    };
+  }
+  if (!isRoot) {
+    const [addB, renB, delB] = row.querySelectorAll('.acts button');
+    addB.onclick = (e) => { e.stopPropagation(); createFolderPrompt(node.id); };
+    renB.onclick = (e) => { e.stopPropagation(); renameFolderPrompt(node); };
+    delB.onclick = (e) => { e.stopPropagation(); deleteFolderConfirm(node); };
+  }
+  // drop target for artifact cards
+  row.addEventListener('dragover', (e) => {
+    if ([...e.dataTransfer.types].includes('text/artifact-id')) { e.preventDefault(); row.classList.add('droptarget'); }
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('droptarget'));
+  row.addEventListener('drop', async (e) => {
+    row.classList.remove('droptarget');
+    const id = e.dataTransfer.getData('text/artifact-id');
+    if (!id) return;
+    e.preventDefault(); e.stopPropagation();
+    try {
+      await api('/api/artifacts/' + id, jsonReq('PATCH', { folder_id: isRoot ? null : node.id }));
+      toast(`Moved to ${node.name}`); refresh();
+    } catch (err) { toast(err.message, true); }
+  });
+  return row;
+}
+
+// ------------------------------------------------------------------ list
+$('#search').addEventListener('input', debounce(() => { state.q = $('#search').value.trim(); refresh(); }, 250));
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+async function refresh() {
+  const params = new URLSearchParams();
+  if (state.q) params.set('q', state.q);
+  else params.set('folder', state.folder);
+  if (state.tag) params.set('tag', state.tag);
+  const [items, tags, folders] = await Promise.all([
+    api('/api/artifacts?' + params), api('/api/tags'), api('/api/folders'),
+  ]);
+  state.items = items;
+  state.folders = folders;
+  renderFolders();
+  renderTags(tags);
+  renderGrid(items);
+  renderViewTitle();
+}
+
+function renderViewTitle() {
+  const el = $('#viewTitle');
+  if (state.q) el.innerHTML = `Search results for “<b>${esc(state.q)}</b>” <span style="font-weight:400">(all folders)</span>`;
+  else if (state.folder === 'root') el.innerHTML = '<b>Unsorted</b>';
+  else el.innerHTML = '🗀 <b>' + esc(folderPathName(state.folder) || 'Folder') + '</b>';
+}
+
+function renderTags(counts) {
+  const bar = $('#tagBar');
+  bar.innerHTML = '';
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return;
+  const all = document.createElement('button');
+  all.className = 'chip' + (state.tag ? '' : ' active');
+  all.textContent = 'All';
+  all.onclick = () => { state.tag = null; refresh(); };
+  bar.appendChild(all);
+  for (const [tag, n] of entries) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (state.tag === tag ? ' active' : '');
+    b.textContent = `${tag} (${n})`;
+    b.onclick = () => { state.tag = state.tag === tag ? null : tag; refresh(); };
+    bar.appendChild(b);
+  }
+}
+
+function renderGrid(items) {
+  const grid = $('#grid');
+  grid.innerHTML = '';
+  $('#empty').style.display = items.length ? 'none' : 'block';
+  for (const a of items) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.draggable = true;
+    card.innerHTML = `
+      <div class="preview">
+        <iframe loading="lazy" sandbox="allow-scripts" src="/raw/${a.id}" title="${esc(a.title)}"></iframe>
+        <div class="shield"></div>
+      </div>
+      <div class="card-body">
+        <div class="card-title">${esc(a.title)}</div>
+        <div class="card-meta">
+          ${a.kind === 'tsx' ? '<span class="kind-badge">TSX</span>' : ''}
+          <span>${fmtDate(a.created_at)}</span><span>${fmtSize(a.size)}</span>
+          ${state.q && a.folder_path ? `<span class="floc">🗀 ${esc(a.folder_path)}</span>` : ''}
+        </div>
+        ${a.tags.length ? `<div class="card-tags">${a.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+      </div>`;
+    card.onclick = () => openModal(a);
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/artifact-id', a.id);
+      e.dataTransfer.effectAllowed = 'move';
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    grid.appendChild(card);
+  }
+  scalePreviews();
+}
+
+function scalePreviews() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.preview').forEach((p) => {
+      const f = p.querySelector('iframe');
+      if (f) f.style.transform = `scale(${p.clientWidth / 1024})`;
+    });
+  });
+}
+addEventListener('resize', debounce(scalePreviews, 150));
+
+// ------------------------------------------------------------------ modal
+function buildFolderSelect(selectedId) {
+  const sel = $('#mFolder');
+  sel.innerHTML = '';
+  const optRoot = new Option('⌂ Unsorted', '');
+  sel.add(optRoot);
+  for (const f of flattenFolders()) {
+    sel.add(new Option(' '.repeat(f.depth * 3) + '🗀 ' + f.name, f.id));
+  }
+  sel.value = selectedId || '';
+}
+
+function openModal(a) {
+  state.current = a;
+  $('#modalFrame').src = '/raw/' + a.id;
+  $('#mTitle').value = a.title;
+  $('#mTags').value = a.tags.join(', ');
+  $('#mNotes').value = a.notes;
+  buildFolderSelect(a.folder_id);
+  $('#mMeta').innerHTML =
+    `Added ${fmtDate(a.created_at)} · ${fmtSize(a.size)}<br>` +
+    `File: ${esc((a.folder_path ? a.folder_path + ' / ' : '') + a.filename)}` +
+    (a.source ? `<br>Source: ${esc(a.source)}` : '');
+  $('#modal').classList.add('on');
+}
+function closeModal() { $('#modal').classList.remove('on'); $('#modalFrame').src = 'about:blank'; state.current = null; }
+$('#mClose').onclick = closeModal;
+$('#modal').addEventListener('click', (e) => { if (e.target === $('#modal')) closeModal(); });
+addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+$('#mSave').onclick = async () => {
+  const a = state.current; if (!a) return;
+  try {
+    await api('/api/artifacts/' + a.id, jsonReq('PATCH', {
+      title: $('#mTitle').value, tags: $('#mTags').value, notes: $('#mNotes').value,
+      folder_id: $('#mFolder').value || null,
+    }));
+    toast('Saved'); closeModal(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+$('#mFullscreen').onclick = () => { if (state.current) open('/raw/' + state.current.id, '_blank'); };
+$('#mDownload').onclick = () => { if (state.current) location.href = '/raw/' + state.current.id + '?download=1'; };
+$('#mDelete').onclick = async () => {
+  const a = state.current; if (!a) return;
+  if (!confirm(`Delete “${a.title}”? The .html file will be removed from disk.`)) return;
+  try { await api('/api/artifacts/' + a.id, { method: 'DELETE' }); toast('Deleted'); closeModal(); refresh(); }
+  catch (e) { toast(e.message, true); }
+};
+
+refresh();
+</script>
+</body>
+</html>

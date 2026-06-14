@@ -1,0 +1,13 @@
+{
+  "name": "openartifact",
+  "version": "0.1.0",
+  "description": "Self-hosted vault for AI-generated HTML artifacts. Obsidian for artifacts.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT"
+}

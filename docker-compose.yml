@@ -1,0 +1,10 @@
+services:
+  openartifact:
+    build: .
+    container_name: openartifact
+    ports:
+      - "4747:4747"
+    volumes:
+      # Your artifacts live here as plain .html files — point this anywhere you like.
+      - ./data:/data
+    restart: unless-stopped

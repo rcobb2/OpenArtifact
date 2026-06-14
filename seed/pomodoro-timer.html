@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pomodoro Timer</title>
+<style>
+  body { margin:0; height:100vh; display:grid; place-items:center; font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+         background:radial-gradient(circle at 30% 20%, #2b1055, #0f0c29); color:#fff; }
+  .wrap { text-align:center; }
+  #time { font-size:96px; font-weight:200; letter-spacing:4px; font-variant-numeric:tabular-nums; }
+  #mode { font-size:14px; text-transform:uppercase; letter-spacing:3px; opacity:.7; margin-bottom:8px; }
+  .ring { width:280px; height:280px; margin:0 auto 24px; position:relative; display:grid; place-items:center; }
+  svg { position:absolute; inset:0; transform:rotate(-90deg); }
+  circle { fill:none; stroke-width:8; }
+  .track { stroke:rgba(255,255,255,.12); }
+  .bar { stroke:#a78bfa; stroke-linecap:round; transition:stroke-dashoffset .3s linear; }
+  button { background:rgba(255,255,255,.12); color:#fff; border:1px solid rgba(255,255,255,.25);
+           border-radius:30px; padding:12px 32px; font-size:16px; cursor:pointer; margin:0 6px; }
+  button:hover { background:rgba(255,255,255,.22); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="ring">
+    <svg viewBox="0 0 280 280">
+      <circle class="track" cx="140" cy="140" r="130"/>
+      <circle class="bar" id="bar" cx="140" cy="140" r="130"/>
+    </svg>
+    <div>
+      <div id="mode">Focus</div>
+      <div id="time">25:00</div>
+    </div>
+  </div>
+  <button id="startBtn">Start</button>
+  <button id="resetBtn">Reset</button>
+</div>
+<script>
+const FOCUS = 25*60, BREAK = 5*60, C = 2*Math.PI*130;
+let total = FOCUS, left = FOCUS, mode = 'Focus', timer = null;
+const bar = document.getElementById('bar');
+bar.style.strokeDasharray = C;
+function draw(){
+  const m = String(Math.floor(left/60)).padStart(2,'0'), s = String(left%60).padStart(2,'0');
+  document.getElementById('time').textContent = m+':'+s;
+  document.getElementById('mode').textContent = mode;
+  bar.style.strokeDashoffset = C*(1-left/total);
+}
+function tick(){
+  if(--left < 0){
+    mode = mode==='Focus' ? 'Break' : 'Focus';
+    total = left = mode==='Focus' ? FOCUS : BREAK;
+  }
+  draw();
+}
+document.getElementById('startBtn').onclick = function(){
+  if(timer){ clearInterval(timer); timer=null; this.textContent='Start'; }
+  else { timer=setInterval(tick,1000); this.textContent='Pause'; }
+};
+document.getElementById('resetBtn').onclick = ()=>{ clearInterval(timer); timer=null; mode='Focus'; total=left=FOCUS;
+  document.getElementById('startBtn').textContent='Start'; draw(); };
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Color Palette Generator</title>
+<style>
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#13151a; color:#eee;
+         min-height:100vh; display:flex; flex-direction:column; }
+  header { padding:24px 32px 8px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  p { margin:0; color:#8b93a5; font-size:14px; }
+  .palette { flex:1; display:flex; min-height:340px; }
+  .swatch { flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center;
+            padding:24px 8px; cursor:pointer; transition:flex .25s; }
+  .swatch:hover { flex:1.35; }
+  .swatch span { background:rgba(0,0,0,.35); border-radius:8px; padding:6px 12px;
+                 font:600 14px ui-monospace,monospace; letter-spacing:.5px; }
+  footer { padding:18px 32px; }
+  button { background:#5b7cfa; color:#fff; border:0; border-radius:9px; padding:11px 26px;
+           font-size:15px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header><h1>Color Palette Generator</h1><p>Click a swatch to copy its hex. Press space or the button for a new palette.</p></header>
+<div class="palette" id="palette"></div>
+<footer><button id="gen">Generate palette</button></footer>
+<script>
+function hsl2hex(h,s,l){
+  s/=100; l/=100;
+  const a=s*Math.min(l,1-l);
+  const f=n=>{ const k=(n+h/30)%12; const c=l-a*Math.max(Math.min(k-3,9-k,1),-1);
+    return Math.round(255*c).toString(16).padStart(2,'0'); };
+  return '#'+f(0)+f(8)+f(4);
+}
+function generate(){
+  const base=Math.random()*360, el=document.getElementById('palette');
+  el.innerHTML='';
+  for(let i=0;i<5;i++){
+    const h=(base+i*18+Math.random()*10)%360;
+    const s=55+Math.random()*30, l=30+i*12;
+    const hex=hsl2hex(h,s,l);
+    const d=document.createElement('div');
+    d.className='swatch'; d.style.background=hex;
+    d.innerHTML='<span>'+hex.toUpperCase()+'</span>';
+    d.onclick=()=>{ navigator.clipboard && navigator.clipboard.writeText(hex);
+      d.querySelector('span').textContent='Copied!';
+      setTimeout(()=>d.querySelector('span').textContent=hex.toUpperCase(),900); };
+    el.appendChild(d);
+  }
+}
+document.getElementById('gen').onclick=generate;
+addEventListener('keydown',e=>{ if(e.code==='Space'){ e.preventDefault(); generate(); } });
+generate();
+</script>
+</body>
+</html>
