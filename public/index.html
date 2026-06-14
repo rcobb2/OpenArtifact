@@ -4,151 +4,155 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenArtifact</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0e1014; --panel: #161a21; --panel-2: #1d222c; --border: #2a3040;
-    --text: #e6e9ef; --muted: #8b93a5; --accent: #7c9aff; --accent-2: #5b7cfa;
-    --danger: #ff6b6b; --ok: #4ade80; --radius: 12px;
+    --bg: #0d0d0d; --panel: #141414; --panel-2: #1c1c1c; --border: #252525;
+    --text: #d4d4d4; --muted: #5a5a5a; --accent: #fab283; --accent-2: #e8956d;
+    --purple: #9d7cd8; --danger: #f87171; --ok: #5de4c7; --radius: 3px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
     background: var(--bg); color: var(--text);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 14px/1.6 "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
   }
   button { font: inherit; cursor: pointer; }
   input, textarea, select { font: inherit; color: var(--text); }
 
   header {
-    position: sticky; top: 0; z-index: 20; background: rgba(14,16,20,.92);
-    backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
-    padding: 14px 24px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20; background: rgba(13,13,13,.96);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
   }
-  .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; letter-spacing: .2px; }
+  .logo { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; letter-spacing: .5px; }
   .logo .mark {
-    width: 26px; height: 26px; border-radius: 7px; flex: none;
-    background: linear-gradient(135deg, var(--accent), #b07cff);
-    display: grid; place-items: center; color: #0e1014; font-size: 14px; font-weight: 800;
+    width: 24px; height: 24px; border-radius: 2px; flex: none;
+    background: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    display: grid; place-items: center; color: #0d0d0d; font-size: 12px; font-weight: 800;
   }
-  .logo small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 2px; }
+  .logo small { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 2px; }
 
   #search {
     flex: 1; min-width: 180px; max-width: 420px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 9px;
-    padding: 8px 13px; outline: none;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 7px 12px; outline: none;
   }
-  #search:focus { border-color: var(--accent-2); }
+  #search:focus { border-color: var(--accent); }
 
   .btn {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 9px; padding: 8px 14px; white-space: nowrap;
+    border-radius: var(--radius); padding: 7px 13px; white-space: nowrap;
   }
-  .btn:hover { border-color: var(--accent-2); }
-  .btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: transparent; border-color: var(--accent); color: var(--accent); }
+  .btn.primary:hover { background: rgba(250,178,131,.1); }
   .btn.danger { color: var(--danger); }
   .btn.danger:hover { border-color: var(--danger); }
 
   /* ------------------------------------------------ layout: sidebar + main */
   .app { display: flex; align-items: flex-start; }
   aside {
-    width: 240px; flex: none; position: sticky; top: 63px;
-    height: calc(100vh - 63px); overflow-y: auto;
-    border-right: 1px solid var(--border); padding: 16px 10px 30px;
+    width: 220px; flex: none; position: sticky; top: 57px;
+    height: calc(100vh - 57px); overflow-y: auto;
+    border-right: 1px solid var(--border); padding: 14px 8px 30px;
   }
   .side-head {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 8px 8px; color: var(--muted); font-size: 12px;
-    text-transform: uppercase; letter-spacing: 1px;
+    padding: 0 6px 8px; color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 1.5px;
   }
   .side-head button {
     background: none; border: 1px solid var(--border); color: var(--muted);
-    border-radius: 6px; width: 22px; height: 22px; line-height: 1;
+    border-radius: 2px; width: 20px; height: 20px; line-height: 1;
   }
-  .side-head button:hover { color: var(--accent); border-color: var(--accent-2); }
+  .side-head button:hover { color: var(--accent); border-color: var(--accent); }
 
   .frow {
-    display: flex; align-items: center; gap: 4px; padding: 5px 8px;
-    border-radius: 8px; cursor: pointer; color: var(--text); position: relative;
+    display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+    border-radius: var(--radius); cursor: pointer; color: var(--text); position: relative;
     border: 1px solid transparent; user-select: none;
   }
   .frow:hover { background: var(--panel); }
-  .frow.active { background: var(--panel-2); border-color: var(--border); }
-  .frow.droptarget { border-color: var(--accent); background: rgba(91,124,250,.12); }
+  .frow.active { background: var(--panel-2); border-color: var(--border); color: var(--accent); }
+  .frow.droptarget { border-color: var(--accent); background: rgba(250,178,131,.08); }
   .frow .twisty {
-    width: 16px; flex: none; text-align: center; color: var(--muted);
-    font-size: 10px; transition: transform .12s;
+    width: 14px; flex: none; text-align: center; color: var(--muted);
+    font-size: 9px; transition: transform .1s;
   }
   .frow .twisty.open { transform: rotate(90deg); }
-  .frow .icon { flex: none; opacity: .8; }
-  .frow .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-  .frow .count { color: var(--muted); font-size: 12px; }
+  .frow .icon { flex: none; opacity: .7; }
+  .frow .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .frow .count { color: var(--muted); font-size: 11px; }
   .frow .acts { display: none; gap: 2px; }
   .frow:hover .acts { display: flex; }
   .frow:hover .count { display: none; }
   .frow .acts button {
-    background: none; border: 0; color: var(--muted); padding: 0 3px; font-size: 12px; border-radius: 4px;
+    background: none; border: 0; color: var(--muted); padding: 0 3px; font-size: 11px; border-radius: 2px;
   }
   .frow .acts button:hover { color: var(--accent); }
   .frow .acts button.del:hover { color: var(--danger); }
 
-  main { flex: 1; min-width: 0; max-width: 1280px; padding: 20px 24px 80px; }
-  #viewTitle { margin: 0 0 14px; font-size: 17px; font-weight: 600; color: var(--muted); }
-  #viewTitle b { color: var(--text); }
+  main { flex: 1; min-width: 0; max-width: 1280px; padding: 18px 22px 80px; }
+  #viewTitle { margin: 0 0 14px; font-size: 13px; font-weight: 500; color: var(--muted); }
+  #viewTitle b { color: var(--accent); }
 
   /* import strip */
-  .import-strip { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; margin-bottom: 18px; }
+  .import-strip { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; margin-bottom: 16px; }
   #pasteBox {
-    flex: 2; min-width: 260px; min-height: 46px; max-height: 46px; resize: none;
-    background: var(--panel); border: 1.5px dashed var(--border); border-radius: var(--radius);
-    padding: 11px 14px; outline: none; transition: .15s;
+    flex: 2; min-width: 260px; min-height: 44px; max-height: 44px; resize: none;
+    background: var(--panel); border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 10px 13px; outline: none; transition: .15s;
   }
-  #pasteBox:focus { border-color: var(--accent); max-height: 160px; min-height: 110px; }
+  #pasteBox:focus { border-color: var(--accent); max-height: 160px; min-height: 110px; border-style: solid; }
   #pasteBox::placeholder { color: var(--muted); }
   .url-group { flex: 1; min-width: 240px; display: flex; }
   #urlInput {
     flex: 1; background: var(--panel); border: 1px solid var(--border);
-    border-right: 0; border-radius: var(--radius) 0 0 var(--radius); padding: 0 14px; outline: none; min-width: 0;
+    border-right: 0; border-radius: var(--radius) 0 0 var(--radius); padding: 0 13px; outline: none; min-width: 0;
   }
-  #urlInput:focus { border-color: var(--accent-2); }
+  #urlInput:focus { border-color: var(--accent); }
   .url-group .btn { border-radius: 0 var(--radius) var(--radius) 0; }
 
-  .hint { color: var(--muted); font-size: 13px; margin: -8px 0 16px; }
+  .hint { color: var(--muted); font-size: 12px; margin: -6px 0 14px; }
   .hint kbd {
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
-    padding: 1px 6px; font-size: 12px; font-family: inherit;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 2px;
+    padding: 1px 5px; font-size: 11px; font-family: inherit; color: var(--text);
   }
 
-  #tagBar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  #tagBar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
   .chip {
-    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
-    border-radius: 999px; padding: 4px 12px; font-size: 13px;
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: var(--radius); padding: 3px 10px; font-size: 12px;
   }
-  .chip.active { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
-  .chip:hover { border-color: var(--accent-2); }
+  .chip.active { border-color: var(--accent); color: var(--accent); }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
 
   /* grid */
-  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 18px; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-    overflow: hidden; cursor: pointer; transition: border-color .15s, transform .15s, opacity .15s;
+    overflow: hidden; cursor: pointer; transition: border-color .1s, opacity .15s;
     display: flex; flex-direction: column;
   }
-  .card:hover { border-color: var(--accent-2); transform: translateY(-2px); }
-  .card.dragging { opacity: .45; }
+  .card:hover { border-color: var(--accent); }
+  .card.dragging { opacity: .4; }
   .preview { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: #fff; flex: none; }
   .preview iframe {
     width: 1024px; height: 768px; border: 0; transform-origin: 0 0; pointer-events: none; background: #fff;
   }
   .preview .shield { position: absolute; inset: 0; }
-  .card-body { padding: 12px 14px 13px; display: flex; flex-direction: column; gap: 6px; }
-  .card-title { font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card-meta { color: var(--muted); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .card-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 5px; }
+  .card-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-meta { color: var(--muted); font-size: 11px; display: flex; gap: 8px; flex-wrap: wrap; }
   .card-meta .floc { color: var(--accent); }
-  .card-tags { display: flex; gap: 5px; flex-wrap: wrap; }
-  .tag { background: var(--panel-2); border-radius: 5px; padding: 1px 7px; font-size: 11.5px; color: var(--accent); }
+  .card-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tag { background: var(--panel-2); border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; font-size: 11px; color: var(--accent); }
   .kind-badge {
-    background: rgba(176,124,255,.16); color: #b07cff; border-radius: 5px;
-    padding: 1px 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .5px; flex: none;
+    background: rgba(157,124,216,.15); color: var(--purple); border: 1px solid rgba(157,124,216,.3);
+    border-radius: 2px; padding: 0 6px; font-size: 10px; font-weight: 700; letter-spacing: .5px; flex: none;
   }
 
   #empty { color: var(--muted); text-align: center; padding: 80px 20px; display: none; }
@@ -157,49 +161,49 @@
   /* drag overlay (external files only) */
   #dropOverlay {
     position: fixed; inset: 0; z-index: 100; display: none; place-items: center;
-    background: rgba(14,16,20,.85); backdrop-filter: blur(3px); pointer-events: none;
+    background: rgba(13,13,13,.88); pointer-events: none;
   }
   #dropOverlay.on { display: grid; }
   #dropOverlay .box {
-    border: 2.5px dashed var(--accent); border-radius: 20px; padding: 60px 90px;
-    font-size: 22px; font-weight: 600; color: var(--accent);
+    border: 1px dashed var(--accent); border-radius: 4px; padding: 60px 90px;
+    font-size: 18px; font-weight: 600; color: var(--accent); letter-spacing: 1px;
   }
 
   /* modal */
   #modal {
     position: fixed; inset: 0; z-index: 50; display: none;
-    background: rgba(10,12,16,.78); backdrop-filter: blur(4px); padding: 28px;
+    background: rgba(0,0,0,.7); padding: 24px;
   }
   #modal.on { display: flex; }
   .modal-card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     flex: 1; display: flex; overflow: hidden; min-height: 0;
   }
   .modal-view { flex: 1; min-width: 0; background: #fff; }
   .modal-view iframe { width: 100%; height: 100%; border: 0; }
   .modal-side {
-    width: 320px; flex: none; border-left: 1px solid var(--border);
-    padding: 18px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
+    width: 300px; flex: none; border-left: 1px solid var(--border);
+    padding: 16px; display: flex; flex-direction: column; gap: 11px; overflow-y: auto;
   }
-  .modal-side label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .modal-side label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 3px; text-transform: uppercase; letter-spacing: .8px; }
   .modal-side input, .modal-side textarea, .modal-side select {
     width: 100%; background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 8px; padding: 8px 10px; outline: none;
+    border-radius: var(--radius); padding: 7px 9px; outline: none;
   }
-  .modal-side :is(input, textarea, select):focus { border-color: var(--accent-2); }
+  .modal-side :is(input, textarea, select):focus { border-color: var(--accent); }
   .modal-side textarea { min-height: 90px; resize: vertical; }
-  .modal-side .meta { font-size: 12px; color: var(--muted); line-height: 1.7; word-break: break-all; }
-  .modal-side .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .modal-side .meta { font-size: 11px; color: var(--muted); line-height: 1.8; word-break: break-all; }
+  .modal-side .row { display: flex; gap: 7px; flex-wrap: wrap; }
   .spacer { flex: 1; }
 
-  #toasts { position: fixed; bottom: 20px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
+  #toasts { position: fixed; bottom: 18px; right: 18px; z-index: 200; display: flex; flex-direction: column; gap: 6px; }
   .toast {
-    background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--ok);
-    border-radius: 9px; padding: 10px 16px; font-size: 14px; max-width: 360px;
-    animation: slide .2s ease-out;
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 2px solid var(--ok);
+    border-radius: var(--radius); padding: 9px 14px; font-size: 13px; max-width: 340px;
+    animation: slide .15s ease-out;
   }
   .toast.err { border-left-color: var(--danger); }
-  @keyframes slide { from { transform: translateX(30px); opacity: 0; } }
+  @keyframes slide { from { transform: translateX(20px); opacity: 0; } }
 
   @media (max-width: 820px) {
     .app { flex-direction: column; }
@@ -212,7 +216,7 @@
 <body>
 
 <header>
-  <div class="logo"><span class="mark">⌬</span>OpenArtifact <small>your HTML artifact vault</small></div>
+  <div class="logo"><span class="mark">▸</span>OpenArtifact <small>artifact vault</small></div>
   <input id="search" type="search" placeholder="Search all folders — title, notes, tags…">
   <button class="btn" id="uploadBtn">⬆ Upload files</button>
   <input type="file" id="filePicker" accept=".html,.htm,.tsx,.jsx,text/html" multiple hidden>
