@@ -768,6 +768,21 @@ async function handle(req, res) {
     return send(res, 200, { ok: true });
   }
 
+  // Google Drive config
+  if (p === '/api/google/config' && method === 'GET') {
+    return send(res, 200, {
+      clientId: getSetting('google_client_id') || '',
+      apiKey: getSetting('google_api_key') || '',
+    });
+  }
+  if (p === '/api/google/config' && method === 'POST') {
+    let j = {};
+    try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
+    if (j.clientId !== undefined) setSetting('google_client_id', j.clientId.trim());
+    if (j.apiKey !== undefined) setSetting('google_api_key', j.apiKey.trim());
+    return send(res, 200, { ok: true });
+  }
+
   // Git sync
   if (p === '/api/git/status' && method === 'GET') return send(res, 200, gitStatus());
   if (p === '/api/git/config' && method === 'POST') {

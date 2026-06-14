@@ -279,6 +279,7 @@
   <div class="logo"><span class="mark">▸</span>OpenArtifact <small>artifact vault</small></div>
   <input id="search" type="search" placeholder="Search all folders — title, notes, tags…">
   <button class="btn" id="uploadBtn">⬆ Upload files</button>
+  <button class="btn" id="driveBtn">☁ Drive</button>
   <button class="btn" id="gitBtn">⎇ Backup</button>
   <input type="file" id="filePicker" accept=".html,.htm,.tsx,.jsx,text/html" multiple hidden>
 </header>
@@ -344,6 +345,34 @@
 </div>
 
 <div id="toasts"></div>
+
+<div id="driveModal" style="position:fixed;inset:0;z-index:50;display:none;background:rgba(0,0,0,.7);align-items:flex-start;justify-content:center;padding-top:80px">
+  <div class="git-panel" style="width:460px">
+    <div class="git-panel-head"><span>☁ Google Drive</span><button id="driveClose">✕</button></div>
+    <div class="git-panel-body">
+      <p class="git-hint" style="margin:0">
+        Requires a Google Cloud project with <b style="color:var(--text)">Drive API</b> and <b style="color:var(--text)">Picker API</b> enabled,
+        plus an OAuth 2.0 Web Client with <code>http://localhost:4747</code> as an authorized JS origin.
+        <br><br>
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent)">console.cloud.google.com</a>
+        → Credentials → Create OAuth 2.0 Client ID (Web app) + API Key
+      </p>
+      <div class="git-field">
+        <label>OAuth Client ID</label>
+        <input id="driveClientId" type="text" placeholder="xxxxxxxxxxxxxxxx.apps.googleusercontent.com">
+      </div>
+      <div class="git-field">
+        <label>API Key</label>
+        <input id="driveApiKey" type="text" placeholder="AIzaSy…">
+      </div>
+      <div class="git-actions">
+        <button class="btn primary" id="driveSaveBtn">Save &amp; Open Picker</button>
+        <button class="btn" id="driveCancelBtn">Cancel</button>
+      </div>
+      <div id="driveConfigResult" style="font-size:12px;color:var(--muted)"></div>
+    </div>
+  </div>
+</div>
 
 <div id="gitModal">
   <div class="git-panel">
@@ -753,6 +782,106 @@ $('#mDelete').onclick = async () => {
 };
 
 refresh();
+
+// --------------------------------------------------------------- google drive
+const drive = { loaded: false, tokenClient: null, token: null, clientId: '', apiKey: '' };
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error('Failed to load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+async function initDrive(clientId, apiKey) {
+  drive.clientId = clientId; drive.apiKey = apiKey;
+  await Promise.all([
+    loadScript('https://apis.google.com/js/api.js'),
+    loadScript('https://accounts.google.com/gsi/client'),
+  ]);
+  await new Promise((res, rej) => gapi.load('picker', { callback: res, onerror: rej }));
+  drive.tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: clientId,
+    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    callback: (resp) => {
+      if (resp.error) { toast('Google auth failed: ' + resp.error, true); return; }
+      drive.token = resp.access_token;
+      openGooglePicker();
+    },
+  });
+  drive.loaded = true;
+}
+
+function openGooglePicker() {
+  const docsView = new google.picker.DocsView()
+    .setIncludeFolders(false)
+    .setMimeTypes('text/html,text/plain,text/x-tsx');
+  new google.picker.PickerBuilder()
+    .addView(docsView)
+    .setOAuthToken(drive.token)
+    .setDeveloperKey(drive.apiKey)
+    .setCallback(onPickerAction)
+    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+    .build()
+    .setVisible(true);
+}
+
+async function onPickerAction(data) {
+  if (data[google.picker.Response.ACTION] !== google.picker.Action.PICKED) return;
+  const files = data[google.picker.Response.DOCUMENTS];
+  let ok = 0;
+  for (const f of files) {
+    try {
+      const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(f.id)}?alt=media`,
+        { headers: { Authorization: `Bearer ${drive.token}` } }
+      );
+      if (!r.ok) throw new Error(`Drive API ${r.status}`);
+      const content = await r.text();
+      const isTsx = /\.(tsx|jsx)$/i.test(f.name);
+      await importHtml(content, { source: 'drive:' + f.name, kind: isTsx ? 'tsx' : undefined });
+      ok++;
+    } catch (e) { toast(`${f.name}: ${e.message}`, true); }
+  }
+  if (ok) refresh();
+}
+
+async function openDrive() {
+  const cfg = await api('/api/google/config').catch(() => ({}));
+  if (!cfg.clientId || !cfg.apiKey) {
+    $('#driveClientId').value = cfg.clientId || '';
+    $('#driveApiKey').value = cfg.apiKey || '';
+    $('#driveModal').style.display = 'flex';
+    return;
+  }
+  try {
+    if (!drive.loaded || cfg.clientId !== drive.clientId || cfg.apiKey !== drive.apiKey) {
+      await initDrive(cfg.clientId, cfg.apiKey);
+    }
+    if (drive.token) openGooglePicker();
+    else drive.tokenClient.requestAccessToken({ prompt: '' });
+  } catch (e) { toast('Drive: ' + e.message, true); }
+}
+
+$('#driveBtn').onclick = openDrive;
+$('#driveClose').onclick = () => { $('#driveModal').style.display = 'none'; };
+$('#driveCancelBtn').onclick = () => { $('#driveModal').style.display = 'none'; };
+$('#driveModal').addEventListener('click', (e) => { if (e.target === $('#driveModal')) $('#driveModal').style.display = 'none'; });
+$('#driveSaveBtn').onclick = async () => {
+  const clientId = $('#driveClientId').value.trim();
+  const apiKey = $('#driveApiKey').value.trim();
+  if (!clientId || !apiKey) { toast('Both Client ID and API Key are required', true); return; }
+  $('#driveSaveBtn').disabled = true;
+  try {
+    await api('/api/google/config', jsonReq('POST', { clientId, apiKey }));
+    drive.loaded = false; drive.token = null; // force reinit with new creds
+    $('#driveModal').style.display = 'none';
+    openDrive();
+  } catch (e) { toast(e.message, true); }
+  $('#driveSaveBtn').disabled = false;
+};
 
 // ----------------------------------------------------------------- git backup
 const fmtSyncTime = (iso) => iso ? new Date(iso).toLocaleString() : 'never';
