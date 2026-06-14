@@ -510,16 +510,52 @@ function gitSync(push) {
   if (!commit.ok && !noChanges) throw httpError(500, 'git commit failed: ' + (commit.err || commit.out));
 
   let pushed = false, pushError = null;
-  if (push && remote) {
-    const p = git(['push', '-u', 'origin', branch]);
-    pushed = p.ok;
-    if (!p.ok) pushError = p.err || p.out;
-  } else if (push && !remote) {
-    pushError = 'No remote URL configured';
+  if (push) {
+    if (!remote) {
+      pushError = 'No remote URL configured';
+    } else {
+      const token = getSetting('git_oauth_token');
+      let pushUrl = remote;
+      if (token) {
+        try {
+          const u = new URL(remote);
+          u.username = 'oauth2';
+          u.password = token;
+          pushUrl = u.toString();
+        } catch { /* SSH or non-URL remote — use as-is */ }
+      }
+      const p = git(['push', pushUrl, `HEAD:${branch}`]);
+      pushed = p.ok;
+      if (!p.ok) {
+        const raw = p.err || p.out;
+        pushError = token ? raw.replaceAll(token, '[token]') : raw;
+      }
+    }
   }
 
   setSetting('git_last_sync', new Date().toISOString());
   return { ok: true, committed: !noChanges, pushed, pushError, lastSync: getSetting('git_last_sync') };
+}
+
+// ------------------------------------------------------ github oauth helpers
+async function ghPost(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(body).toString(),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw httpError(502, `GitHub returned ${res.status}`);
+  return res.json();
+}
+
+async function ghGet(url, token) {
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json', 'User-Agent': 'OpenArtifact/1.0' },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) return null;
+  return res.json();
 }
 
 // ------------------------------------------------------------------- routes
@@ -683,6 +719,53 @@ async function handle(req, res) {
       return send(res, 200, tsxWrapperHtml(a.title, fs.readFileSync(file, 'utf8')), headers);
     }
     return send(res, 200, fs.readFileSync(file), headers);
+  }
+
+  // GitHub OAuth — Device Flow
+  if (p === '/api/git/oauth/start' && method === 'POST') {
+    let j = {};
+    try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
+    if (!j.client_id) throw httpError(400, 'client_id required');
+    setSetting('git_oauth_client_id', j.client_id.trim());
+    const data = await ghPost('https://github.com/login/device/code', { client_id: j.client_id, scope: 'repo' });
+    if (data.error) throw httpError(400, data.error_description || data.error);
+    return send(res, 200, data); // { device_code, user_code, verification_uri, expires_in, interval }
+  }
+
+  if (p === '/api/git/oauth/poll' && method === 'POST') {
+    let j = {};
+    try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
+    const clientId = getSetting('git_oauth_client_id');
+    if (!j.device_code || !clientId) throw httpError(400, 'device_code required');
+    const data = await ghPost('https://github.com/login/oauth/access_token', {
+      client_id: clientId,
+      device_code: j.device_code,
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    });
+    if (data.access_token) {
+      setSetting('git_oauth_token', data.access_token);
+      const user = await ghGet('https://api.github.com/user', data.access_token);
+      if (user && user.login) setSetting('git_oauth_login', user.login);
+      return send(res, 200, { status: 'complete', login: user?.login || null });
+    }
+    if (data.error === 'access_denied' || data.error === 'expired_token') {
+      return send(res, 200, { status: 'error', error: data.error_description || data.error });
+    }
+    // authorization_pending | slow_down
+    return send(res, 200, { status: 'pending', interval: data.interval || 5 });
+  }
+
+  if (p === '/api/git/oauth/status' && method === 'GET') {
+    return send(res, 200, {
+      connected: !!getSetting('git_oauth_token'),
+      login: getSetting('git_oauth_login') || null,
+      clientId: getSetting('git_oauth_client_id') || '',
+    });
+  }
+
+  if (p === '/api/git/oauth/revoke' && method === 'POST') {
+    db.prepare("DELETE FROM settings WHERE key IN ('git_oauth_token','git_oauth_login')").run();
+    return send(res, 200, { ok: true });
   }
 
   // Git sync

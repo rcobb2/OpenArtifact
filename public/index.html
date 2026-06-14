@@ -244,6 +244,27 @@
   .git-actions { display: flex; gap: 8px; padding-top: 2px; }
   #gitResult { font-size: 12px; min-height: 18px; color: var(--muted); }
 
+  .git-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+  .git-oauth-status { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .git-oauth-status .connected { color: var(--ok); }
+  .git-oauth-status .disconnected { color: var(--muted); }
+  .git-device-code {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+  .git-device-code .code {
+    font-size: 20px; font-weight: 700; letter-spacing: 4px; color: var(--accent);
+  }
+  .git-device-code .copy-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: var(--radius); padding: 3px 8px; font-size: 11px;
+  }
+  .git-device-code .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .git-poll-status { font-size: 12px; color: var(--muted); }
+  .git-poll-status.ok { color: var(--ok); }
+  .git-poll-status.err { color: var(--danger); }
+
   @media (max-width: 820px) {
     .app { flex-direction: column; }
     aside { width: 100%; height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -329,18 +350,47 @@
     <div class="git-panel-head"><span>⎇ Git Backup</span><button id="gitClose">✕</button></div>
     <div class="git-panel-body">
       <div class="git-status-row" id="gitStatusRow">loading…</div>
+      <!-- GitHub OAuth -->
+      <div>
+        <div class="git-oauth-status" id="gitOAuthStatus">
+          <span class="disconnected">○ Not connected to GitHub</span>
+        </div>
+      </div>
+      <!-- connect flow (shown when not connected) -->
+      <div id="gitConnectSection">
+        <div class="git-field">
+          <label>GitHub OAuth App — Client ID</label>
+          <div style="display:flex;gap:6px">
+            <input id="gitClientId" type="text" placeholder="Iv1.xxxxxxxxxxxxxxxxxxxx" style="flex:1">
+            <button class="btn primary" id="gitConnectBtn">Connect GitHub</button>
+          </div>
+        </div>
+        <p class="git-hint" style="margin-top:4px">
+          Register a free <a href="https://github.com/settings/developers" target="_blank" style="color:var(--accent)">GitHub OAuth App</a> → copy the Client ID. The callback URL can be anything (it isn't used for Device Flow).
+        </p>
+      </div>
+      <!-- device code display (shown during flow) -->
+      <div id="gitDeviceSection" style="display:none">
+        <div class="git-device-code">
+          <span class="code" id="gitUserCode"></span>
+          <button class="copy-btn" id="gitCopyCode">copy</button>
+          <a id="gitDeviceLink" href="https://github.com/login/device" target="_blank" style="font-size:12px;color:var(--accent);margin-left:auto">Open github.com/login/device →</a>
+        </div>
+        <div class="git-poll-status" id="gitPollStatus" style="margin-top:8px">Waiting for authorization…</div>
+      </div>
+      <hr class="git-divider">
       <div class="git-field">
         <label>Remote URL</label>
-        <input id="gitRemote" type="text" placeholder="https://TOKEN@github.com/user/repo.git">
+        <input id="gitRemote" type="text" placeholder="https://github.com/user/repo.git">
       </div>
       <div class="git-field">
         <label>Branch</label>
         <input id="gitBranch" type="text" placeholder="main" style="max-width:160px">
       </div>
       <p class="git-hint">
-        For GitHub, use a Personal Access Token in the URL:<br>
-        <code>https://&lt;TOKEN&gt;@github.com/user/repo.git</code><br>
-        The git repo is initialized inside the <code>data/</code> volume and persists across redeploys.
+        With GitHub OAuth connected, push uses your token automatically — no credentials in the URL.<br>
+        For other providers, embed a PAT: <code>https://TOKEN@gitlab.com/user/repo.git</code><br>
+        The git repo lives inside the <code>data/</code> volume and persists across redeploys.
       </p>
       <div class="git-actions">
         <button class="btn primary" id="gitCommitBtn">Commit snapshot</button>
@@ -754,9 +804,81 @@ async function gitSync(push) {
   btn.textContent = orig;
 }
 
-$('#gitBtn').onclick = () => { $('#gitModal').classList.add('on'); loadGitStatus(); };
-$('#gitClose').onclick = () => $('#gitModal').classList.remove('on');
-$('#gitModal').addEventListener('click', (e) => { if (e.target === $('#gitModal')) $('#gitModal').classList.remove('on'); });
+// ----------------------------------------------------------------- git oauth
+let oauthPollTimer = null;
+
+function stopPolling() { if (oauthPollTimer) { clearInterval(oauthPollTimer); oauthPollTimer = null; } }
+
+async function loadOAuthStatus() {
+  try {
+    const s = await api('/api/git/oauth/status');
+    if (s.connected) {
+      $('#gitOAuthStatus').innerHTML = `<span class="connected">● Connected as @${esc(s.login || 'unknown')}</span> <button class="btn" id="gitDisconnectBtn" style="font-size:11px;padding:3px 8px">Disconnect</button>`;
+      $('#gitConnectSection').style.display = 'none';
+      $('#gitDeviceSection').style.display = 'none';
+      $('#gitDisconnectBtn').onclick = async () => {
+        await api('/api/git/oauth/revoke', { method: 'POST' });
+        loadOAuthStatus();
+      };
+    } else {
+      $('#gitOAuthStatus').innerHTML = `<span class="disconnected">○ Not connected to GitHub</span>`;
+      $('#gitClientId').value = s.clientId || '';
+      $('#gitConnectSection').style.display = '';
+      $('#gitDeviceSection').style.display = 'none';
+    }
+  } catch { /* noop */ }
+}
+
+async function startOAuth() {
+  const clientId = $('#gitClientId').value.trim();
+  if (!clientId) { toast('Enter a GitHub OAuth App Client ID', true); return; }
+  $('#gitConnectBtn').disabled = true;
+  try {
+    const d = await api('/api/git/oauth/start', jsonReq('POST', { client_id: clientId }));
+    // show device code
+    $('#gitUserCode').textContent = d.user_code;
+    $('#gitDeviceLink').href = d.verification_uri || 'https://github.com/login/device';
+    $('#gitConnectSection').style.display = 'none';
+    $('#gitDeviceSection').style.display = '';
+    $('#gitPollStatus').className = 'git-poll-status';
+    $('#gitPollStatus').textContent = 'Waiting for authorization…';
+
+    const intervalMs = Math.max((d.interval || 5), 5) * 1000;
+    stopPolling();
+    oauthPollTimer = setInterval(async () => {
+      try {
+        const r = await api('/api/git/oauth/poll', jsonReq('POST', { device_code: d.device_code }));
+        if (r.status === 'complete') {
+          stopPolling();
+          $('#gitPollStatus').className = 'git-poll-status ok';
+          $('#gitPollStatus').textContent = `Connected as @${r.login || 'unknown'}`;
+          setTimeout(loadOAuthStatus, 1000);
+        } else if (r.status === 'error') {
+          stopPolling();
+          $('#gitPollStatus').className = 'git-poll-status err';
+          $('#gitPollStatus').textContent = r.error || 'Authorization failed';
+          $('#gitConnectBtn').disabled = false;
+          setTimeout(() => { $('#gitConnectSection').style.display = ''; $('#gitDeviceSection').style.display = 'none'; }, 2000);
+        }
+        // pending: keep polling
+      } catch { /* retry next interval */ }
+    }, intervalMs);
+  } catch (e) {
+    toast(e.message, true);
+    $('#gitConnectBtn').disabled = false;
+  }
+}
+
+$('#gitCopyCode').onclick = () => {
+  navigator.clipboard.writeText($('#gitUserCode').textContent).then(() => { $('#gitCopyCode').textContent = 'copied!'; setTimeout(() => { $('#gitCopyCode').textContent = 'copy'; }, 1500); });
+};
+
+$('#gitConnectBtn').onclick = startOAuth;
+
+$('#gitBtn').onclick = () => { $('#gitModal').classList.add('on'); loadGitStatus(); loadOAuthStatus(); };
+const closeGitModal = () => { stopPolling(); $('#gitModal').classList.remove('on'); };
+$('#gitClose').onclick = closeGitModal;
+$('#gitModal').addEventListener('click', (e) => { if (e.target === $('#gitModal')) closeGitModal(); });
 $('#gitSaveConfig').onclick = gitSaveConfig;
 $('#gitCommitBtn').onclick = () => gitSync(false);
 $('#gitPushBtn').onclick = () => gitSync(true);
