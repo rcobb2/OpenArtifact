@@ -265,6 +265,17 @@
   .git-poll-status.ok { color: var(--ok); }
   .git-poll-status.err { color: var(--danger); }
 
+  .drive-row {
+    display: flex; align-items: center; gap: 10px; padding: 7px 14px;
+    border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px;
+  }
+  .drive-row:hover { background: var(--panel-2); }
+  .drive-row.sel { background: rgba(250,178,131,.07); }
+  .drive-row .dr-check { color: var(--muted); flex: none; font-size: 13px; }
+  .drive-row.sel .dr-check { color: var(--accent); }
+  .drive-row .dr-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drive-row .dr-meta { color: var(--muted); font-size: 11px; flex: none; }
+
   @media (max-width: 820px) {
     .app { flex-direction: column; }
     aside { width: 100%; height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--border); }
@@ -346,30 +357,40 @@
 
 <div id="toasts"></div>
 
-<div id="driveModal" style="position:fixed;inset:0;z-index:50;display:none;background:rgba(0,0,0,.7);align-items:flex-start;justify-content:center;padding-top:80px">
-  <div class="git-panel" style="width:460px">
+<div id="driveModal" style="position:fixed;inset:0;z-index:50;display:none;background:rgba(0,0,0,.7);align-items:flex-start;justify-content:center;padding-top:60px">
+  <div class="git-panel" style="width:560px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
     <div class="git-panel-head"><span>☁ Google Drive</span><button id="driveClose">✕</button></div>
-    <div class="git-panel-body">
+
+    <!-- config (shown before first connect) -->
+    <div id="driveConfigView" class="git-panel-body">
       <p class="git-hint" style="margin:0">
-        Requires a Google Cloud project with <b style="color:var(--text)">Drive API</b> and <b style="color:var(--text)">Picker API</b> enabled,
-        plus an OAuth 2.0 Web Client with <code>http://localhost:4747</code> as an authorized JS origin.
-        <br><br>
-        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent)">console.cloud.google.com</a>
-        → Credentials → Create OAuth 2.0 Client ID (Web app) + API Key
+        Enable the <b style="color:var(--text)">Google Drive API</b> in your project, then create an
+        <b style="color:var(--text)">OAuth 2.0 Web Client ID</b> at
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent)">Google Cloud Console</a>
+        with <code>http://localhost:4747</code> as an authorized JavaScript origin. No API key needed.
       </p>
       <div class="git-field">
         <label>OAuth Client ID</label>
-        <input id="driveClientId" type="text" placeholder="xxxxxxxxxxxxxxxx.apps.googleusercontent.com">
-      </div>
-      <div class="git-field">
-        <label>API Key <span style="color:var(--muted);font-size:10px;text-transform:none;letter-spacing:0">(optional)</span></label>
-        <input id="driveApiKey" type="text" placeholder="AIzaSy… — leave blank if you hit API key errors">
+        <input id="driveClientId" type="text" placeholder="xxxxxxxxxxxx.apps.googleusercontent.com">
       </div>
       <div class="git-actions">
-        <button class="btn primary" id="driveSaveBtn">Save &amp; Open Picker</button>
+        <button class="btn primary" id="driveSaveBtn">Connect Google Drive</button>
         <button class="btn" id="driveCancelBtn">Cancel</button>
       </div>
-      <div id="driveConfigResult" style="font-size:12px;color:var(--muted)"></div>
+    </div>
+
+    <!-- file browser (shown after auth) -->
+    <div id="driveBrowserView" style="display:none;flex-direction:column;flex:1;min-height:0">
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <input id="driveSearch" type="search" placeholder="Filter by name…" style="flex:1;background:var(--panel-2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 10px;color:var(--text);font:inherit;outline:none">
+        <button class="btn" id="driveRefreshBtn" style="padding:5px 10px" title="Refresh">↻</button>
+        <button class="btn" id="driveDisconnectBtn" style="padding:5px 10px;font-size:11px">Disconnect</button>
+      </div>
+      <div id="driveFileList" style="flex:1;overflow-y:auto;min-height:0"></div>
+      <div style="padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <button class="btn primary" id="driveImportBtn" disabled>Import selected</button>
+        <span id="driveSelCount" style="font-size:12px;color:var(--muted)"></span>
+      </div>
     </div>
   </div>
 </div>
@@ -784,7 +805,7 @@ $('#mDelete').onclick = async () => {
 refresh();
 
 // --------------------------------------------------------------- google drive
-const drive = { loaded: false, tokenClient: null, token: null, clientId: '', apiKey: '' };
+const drive = { loaded: false, tokenClient: null, token: null, clientId: '', sel: new Set(), files: [] };
 
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -795,87 +816,120 @@ function loadScript(src) {
   });
 }
 
-async function initDrive(clientId, apiKey) {
-  drive.clientId = clientId; drive.apiKey = apiKey;
-  await Promise.all([
-    loadScript('https://apis.google.com/js/api.js'),
-    loadScript('https://accounts.google.com/gsi/client'),
-  ]);
-  await new Promise((res, rej) => gapi.load('picker', { callback: res, onerror: rej }));
+async function initDrive(clientId) {
+  drive.clientId = clientId;
+  await loadScript('https://accounts.google.com/gsi/client');
   drive.tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: 'https://www.googleapis.com/auth/drive.readonly',
     callback: (resp) => {
       if (resp.error) { toast('Google auth failed: ' + resp.error, true); return; }
       drive.token = resp.access_token;
-      openGooglePicker();
+      showDriveBrowser();
     },
   });
   drive.loaded = true;
 }
 
-function openGooglePicker() {
-  const docsView = new google.picker.DocsView()
-    .setIncludeFolders(false)
-    .setMimeTypes('text/html,text/plain,text/x-tsx');
-  let builder = new google.picker.PickerBuilder()
-    .addView(docsView)
-    .setOAuthToken(drive.token)
-    .setCallback(onPickerAction)
-    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED);
-  if (drive.apiKey) builder = builder.setDeveloperKey(drive.apiKey);
-  builder.build().setVisible(true);
+async function fetchDriveFiles() {
+  const search = $('#driveSearch').value.trim();
+  let q = "trashed=false and (mimeType='text/html' or name contains '.html' or name contains '.htm' or name contains '.tsx' or name contains '.jsx')";
+  if (search) q += ` and name contains '${search.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  const params = new URLSearchParams({ q, fields: 'files(id,name,mimeType,size,modifiedTime)', orderBy: 'modifiedTime desc', pageSize: '100' });
+  const r = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, { headers: { Authorization: `Bearer ${drive.token}` } });
+  if (r.status === 401) { drive.token = null; throw new Error('Session expired — reconnect'); }
+  if (!r.ok) throw new Error(`Drive API ${r.status}`);
+  return (await r.json()).files || [];
 }
 
-async function onPickerAction(data) {
-  if (data[google.picker.Response.ACTION] !== google.picker.Action.PICKED) return;
-  const files = data[google.picker.Response.DOCUMENTS];
-  let ok = 0;
-  for (const f of files) {
-    try {
-      const r = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(f.id)}?alt=media`,
-        { headers: { Authorization: `Bearer ${drive.token}` } }
-      );
-      if (!r.ok) throw new Error(`Drive API ${r.status}`);
-      const content = await r.text();
-      const isTsx = /\.(tsx|jsx)$/i.test(f.name);
-      await importHtml(content, { source: 'drive:' + f.name, kind: isTsx ? 'tsx' : undefined });
-      ok++;
-    } catch (e) { toast(`${f.name}: ${e.message}`, true); }
+function renderDriveFiles() {
+  const list = $('#driveFileList');
+  if (!drive.files.length) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">No HTML or TSX files found in Drive</div>';
+    return;
   }
-  if (ok) refresh();
+  list.innerHTML = '';
+  for (const f of drive.files) {
+    const sel = drive.sel.has(f.id);
+    const size = f.size ? (f.size < 1048576 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB') : '';
+    const date = f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString() : '';
+    const row = document.createElement('div');
+    row.className = 'drive-row' + (sel ? ' sel' : '');
+    row.innerHTML = `<span class="dr-check">${sel ? '▪' : '▫'}</span><span class="dr-name">${esc(f.name)}</span><span class="dr-meta">${size}</span><span class="dr-meta">${date}</span>`;
+    row.onclick = () => { sel ? drive.sel.delete(f.id) : drive.sel.add(f.id); renderDriveFiles(); updateDriveSel(); };
+    list.appendChild(row);
+  }
+}
+
+function updateDriveSel() {
+  const n = drive.sel.size;
+  $('#driveImportBtn').disabled = n === 0;
+  $('#driveImportBtn').textContent = n ? `Import ${n} file${n > 1 ? 's' : ''}` : 'Import selected';
+  $('#driveSelCount').textContent = n ? `${n} selected` : '';
+}
+
+async function showDriveBrowser() {
+  $('#driveConfigView').style.display = 'none';
+  $('#driveBrowserView').style.display = 'flex';
+  drive.sel.clear(); updateDriveSel();
+  $('#driveFileList').innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Loading…</div>';
+  try { drive.files = await fetchDriveFiles(); renderDriveFiles(); }
+  catch (e) { toast('Drive: ' + e.message, true); driveShowConfig(); }
+}
+
+function driveShowConfig() {
+  $('#driveBrowserView').style.display = 'none';
+  $('#driveConfigView').style.display = '';
 }
 
 async function openDrive() {
   const cfg = await api('/api/google/config').catch(() => ({}));
-  if (!cfg.clientId || !cfg.apiKey) {
-    $('#driveClientId').value = cfg.clientId || '';
-    $('#driveApiKey').value = cfg.apiKey || '';
-    $('#driveModal').style.display = 'flex';
-    return;
-  }
+  if (!cfg.clientId) { $('#driveClientId').value = ''; $('#driveModal').style.display = 'flex'; driveShowConfig(); return; }
+  $('#driveModal').style.display = 'flex';
   try {
-    if (!drive.loaded || cfg.clientId !== drive.clientId || cfg.apiKey !== drive.apiKey) {
-      await initDrive(cfg.clientId, cfg.apiKey);
-    }
-    if (drive.token) openGooglePicker();
+    if (!drive.loaded || cfg.clientId !== drive.clientId) await initDrive(cfg.clientId);
+    if (drive.token) await showDriveBrowser();
     else drive.tokenClient.requestAccessToken({ prompt: '' });
-  } catch (e) { toast('Drive: ' + e.message, true); }
+  } catch (e) { toast('Drive: ' + e.message, true); driveShowConfig(); }
+}
+
+async function importDriveSelected() {
+  if (!drive.sel.size) return;
+  const btn = $('#driveImportBtn');
+  btn.disabled = true; btn.textContent = '…';
+  let ok = 0;
+  for (const id of drive.sel) {
+    const f = drive.files.find(x => x.id === id);
+    try {
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { headers: { Authorization: `Bearer ${drive.token}` } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const content = await r.text();
+      await importHtml(content, { source: 'drive:' + (f?.name || id), kind: /\.(tsx|jsx)$/i.test(f?.name || '') ? 'tsx' : undefined });
+      ok++;
+    } catch (e) { toast(`${f?.name || id}: ${e.message}`, true); }
+  }
+  if (ok) { refresh(); toast(`Imported ${ok} file${ok > 1 ? 's' : ''} from Drive`); }
+  drive.sel.clear(); updateDriveSel(); renderDriveFiles();
+  btn.disabled = false;
 }
 
 $('#driveBtn').onclick = openDrive;
 $('#driveClose').onclick = () => { $('#driveModal').style.display = 'none'; };
 $('#driveCancelBtn').onclick = () => { $('#driveModal').style.display = 'none'; };
 $('#driveModal').addEventListener('click', (e) => { if (e.target === $('#driveModal')) $('#driveModal').style.display = 'none'; });
+$('#driveDisconnectBtn').onclick = () => { drive.token = null; driveShowConfig(); };
+$('#driveRefreshBtn').onclick = () => showDriveBrowser();
+$('#driveSearch').addEventListener('input', debounce(async () => {
+  try { drive.files = await fetchDriveFiles(); drive.sel.clear(); updateDriveSel(); renderDriveFiles(); } catch { /* noop */ }
+}, 400));
+$('#driveImportBtn').onclick = importDriveSelected;
 $('#driveSaveBtn').onclick = async () => {
   const clientId = $('#driveClientId').value.trim();
-  const apiKey = $('#driveApiKey').value.trim();
-  if (!clientId || !apiKey) { toast('Both Client ID and API Key are required', true); return; }
+  if (!clientId) { toast('Client ID is required', true); return; }
   $('#driveSaveBtn').disabled = true;
   try {
-    await api('/api/google/config', jsonReq('POST', { clientId, apiKey }));
-    drive.loaded = false; drive.token = null; // force reinit with new creds
+    await api('/api/google/config', jsonReq('POST', { clientId, apiKey: '' }));
+    drive.loaded = false; drive.token = null;
     $('#driveModal').style.display = 'none';
     openDrive();
   } catch (e) { toast(e.message, true); }
