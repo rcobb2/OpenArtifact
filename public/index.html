@@ -362,8 +362,8 @@
         <input id="driveClientId" type="text" placeholder="xxxxxxxxxxxxxxxx.apps.googleusercontent.com">
       </div>
       <div class="git-field">
-        <label>API Key</label>
-        <input id="driveApiKey" type="text" placeholder="AIzaSy…">
+        <label>API Key <span style="color:var(--muted);font-size:10px;text-transform:none;letter-spacing:0">(optional)</span></label>
+        <input id="driveApiKey" type="text" placeholder="AIzaSy… — leave blank if you hit API key errors">
       </div>
       <div class="git-actions">
         <button class="btn primary" id="driveSaveBtn">Save &amp; Open Picker</button>
@@ -818,14 +818,13 @@ function openGooglePicker() {
   const docsView = new google.picker.DocsView()
     .setIncludeFolders(false)
     .setMimeTypes('text/html,text/plain,text/x-tsx');
-  new google.picker.PickerBuilder()
+  let builder = new google.picker.PickerBuilder()
     .addView(docsView)
     .setOAuthToken(drive.token)
-    .setDeveloperKey(drive.apiKey)
     .setCallback(onPickerAction)
-    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
-    .build()
-    .setVisible(true);
+    .enableFeature(google.picker.Feature.MULTISELECT_ENABLED);
+  if (drive.apiKey) builder = builder.setDeveloperKey(drive.apiKey);
+  builder.build().setVisible(true);
 }
 
 async function onPickerAction(data) {
