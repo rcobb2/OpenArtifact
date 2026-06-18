@@ -346,6 +346,7 @@
         <button class="btn primary" id="mSave">Save</button>
         <button class="btn" id="mFullscreen">⛶ Full screen</button>
         <button class="btn" id="mDownload">⬇ Download</button>
+        <button class="btn" id="mShare">⎗ Share</button>
       </div>
       <div class="row">
         <button class="btn danger" id="mDelete">Delete</button>
@@ -794,6 +795,14 @@ $('#mSave').onclick = async () => {
 };
 $('#mFullscreen').onclick = () => { if (state.current) open('/raw/' + state.current.id, '_blank'); };
 $('#mDownload').onclick = () => { if (state.current) location.href = '/raw/' + state.current.id + '?download=1'; };
+$('#mShare').onclick = () => {
+  if (!state.current) return;
+  const url = location.origin + '/share/' + state.current.id;
+  navigator.clipboard.writeText(url).then(
+    () => toast('Share link copied to clipboard'),
+    () => toast('Link: ' + url),
+  );
+};
 $('#mDelete').onclick = async () => {
   const a = state.current; if (!a) return;
   if (!confirm(`Delete “${a.title}”? The .html file will be removed from disk.`)) return;

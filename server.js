@@ -53,6 +53,7 @@ if (!db.prepare('PRAGMA table_info(artifacts)').all().some((c) => c.name === 'fo
 
 // ----------------------------------------------------------------- helpers
 const newId = () => crypto.randomBytes(5).toString('hex');
+const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function slugify(s) {
   return (s || 'untitled').toLowerCase().normalize('NFKD')
@@ -781,6 +782,53 @@ async function handle(req, res) {
     if (j.clientId !== undefined) setSetting('google_client_id', j.clientId.trim());
     if (j.apiKey !== undefined) setSetting('google_api_key', j.apiKey.trim());
     return send(res, 200, { ok: true });
+  }
+
+  // Shareable standalone view
+  if ((m = p.match(/^\/share\/([a-f0-9]{10})$/)) && method === 'GET') {
+    const a = getArtifact(m[1]);
+    if (!a) throw httpError(404, 'Artifact not found');
+    const tagsHtml = a.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+    const shareHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escHtml(a.title)} — OpenArtifact</title>
+<style>
+  :root { --bg:#0d0d0d; --panel:#141414; --border:#252525; --text:#d4d4d4; --muted:#5a5a5a; --accent:#fab283; --radius:3px; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; background:var(--bg); color:var(--text); font:14px/1.6 ui-monospace,monospace; }
+  header {
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:10px 18px; border-bottom:1px solid var(--border);
+    background:rgba(13,13,13,.97); position:sticky; top:0; z-index:10;
+  }
+  .logo { display:flex; align-items:center; gap:7px; font-weight:700; font-size:14px; white-space:nowrap; }
+  .mark { width:22px; height:22px; border-radius:2px; background:var(--accent); display:grid; place-items:center; color:#0d0d0d; font-size:11px; font-weight:800; }
+  .title { font-weight:600; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tags { display:flex; gap:5px; flex-wrap:wrap; }
+  .tag { background:rgba(250,178,131,.12); color:var(--accent); border:1px solid rgba(250,178,131,.25); border-radius:2px; padding:1px 7px; font-size:11px; }
+  .actions { display:flex; gap:7px; margin-left:auto; }
+  .btn { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:5px 11px; font:inherit; cursor:pointer; text-decoration:none; white-space:nowrap; font-size:13px; }
+  .btn:hover { border-color:var(--accent); color:var(--accent); }
+  iframe { display:block; width:100%; border:0; height:calc(100vh - 51px); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="mark">&#9654;</span> OpenArtifact</div>
+  <div class="title">${escHtml(a.title)}</div>
+  ${tagsHtml ? `<div class="tags">${tagsHtml}</div>` : ''}
+  <div class="actions">
+    <a class="btn" href="/raw/${a.id}?download=1">&#8659; Download</a>
+    <a class="btn" href="/">&#8962; Vault</a>
+  </div>
+</header>
+<iframe src="/raw/${a.id}" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock" title="${escHtml(a.title)}"></iframe>
+</body>
+</html>`;
+    return send(res, 200, shareHtml, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   }
 
   // Git sync
