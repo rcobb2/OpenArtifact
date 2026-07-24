@@ -2,7 +2,7 @@ FROM node:22-alpine
 RUN apk add --no-cache git
 
 WORKDIR /app
-COPY server.js package.json ./
+COPY server.js metrics.js package.json ./
 COPY public ./public
 COPY seed ./seed
 
