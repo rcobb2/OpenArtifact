@@ -13,6 +13,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { spawnSync } = require('node:child_process');
+const { recordRequest, renderMetrics } = require('./metrics.js');
 
 const PORT = parseInt(process.env.PORT || '4747', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -562,18 +563,20 @@ async function ghGet(url, token) {
 // ------------------------------------------------------------------- routes
 const INDEX_HTML = path.join(__dirname, 'public', 'index.html');
 
-async function handle(req, res) {
+async function handle(req, res, ctx) {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   const method = req.method === 'HEAD' ? 'GET' : req.method; // Node omits the body for HEAD automatically
 
   // UI
   if (method === 'GET' && (p === '/' || p === '/index.html')) {
+    ctx.route = '/';
     return send(res, 200, fs.readFileSync(INDEX_HTML), { 'Content-Type': 'text/html; charset=utf-8' });
   }
 
   // List / search
   if (method === 'GET' && p === '/api/artifacts') {
+    ctx.route = '/api/artifacts';
     return send(res, 200, listArtifacts({
       q: url.searchParams.get('q'),
       tag: url.searchParams.get('tag'),
@@ -583,19 +586,28 @@ async function handle(req, res) {
 
   // Tag counts
   if (method === 'GET' && p === '/api/tags') {
+    ctx.route = '/api/tags';
     const counts = {};
     for (const a of listArtifacts()) for (const t of a.tags) counts[t] = (counts[t] || 0) + 1;
     return send(res, 200, counts);
   }
 
+  // Metrics (scraped by Prometheus; unauthenticated like everything else here)
+  if (method === 'GET' && p === '/metrics') {
+    ctx.route = '/metrics';
+    return send(res, 200, renderMetrics(), { 'Content-Type': 'text/plain; version=0.0.4' });
+  }
+
   // Folders
-  if (p === '/api/folders' && method === 'GET') return send(res, 200, folderTree());
+  if (p === '/api/folders' && method === 'GET') { ctx.route = '/api/folders'; return send(res, 200, folderTree()); }
   if (p === '/api/folders' && method === 'POST') {
+    ctx.route = '/api/folders';
     const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
     return send(res, 201, createFolder({ name: body.name, parent_id: body.parent_id ?? null }));
   }
   let m;
   if ((m = p.match(/^\/api\/folders\/([a-f0-9]{10})$/))) {
+    ctx.route = '/api/folders/:id';
     if (method === 'PATCH' || method === 'PUT') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       return send(res, 200, updateFolder(m[1], body));
@@ -605,6 +617,7 @@ async function handle(req, res) {
 
   // Import: JSON {html,...} or raw HTML body
   if (method === 'POST' && p === '/api/artifacts') {
+    ctx.route = '/api/artifacts';
     const body = await readBody(req);
     const ct = (req.headers['content-type'] || '').split(';')[0].trim();
     let payload;
@@ -619,6 +632,7 @@ async function handle(req, res) {
 
   // Import from URL (kept for back-compat; /api/import is the universal endpoint)
   if (method === 'POST' && p === '/api/import-url') {
+    ctx.route = '/api/import-url';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     return send(res, 201, await importFromUrl(j.url, { folder_id: resolveFolderSpec(j) }));
@@ -627,6 +641,7 @@ async function handle(req, res) {
   // Universal import: multipart file upload, JSON {url|html}, or raw HTML body.
   // Optional folder targeting via folder_id, or folder="Path/Like/This" (auto-created).
   if (method === 'POST' && p === '/api/import') {
+    ctx.route = '/api/import';
     const body = await readBody(req);
     const ct = req.headers['content-type'] || '';
     const base = ct.split(';')[0].trim();
@@ -676,6 +691,7 @@ async function handle(req, res) {
 
   // Per-artifact routes
   if ((m = p.match(/^\/api\/artifacts\/([a-f0-9]{10})$/))) {
+    ctx.route = '/api/artifacts/:id';
     const a = getArtifact(m[1]);
     if (!a) throw httpError(404, 'Artifact not found');
 
@@ -701,6 +717,7 @@ async function handle(req, res) {
 
   // Raw render (sandboxed via CSP even when opened directly) & download
   if ((m = p.match(/^\/raw\/([a-f0-9]{10})$/)) && method === 'GET') {
+    ctx.route = '/raw/:id';
     const a = getArtifact(m[1]);
     if (!a) throw httpError(404, 'Artifact not found');
     const file = artifactDiskPath(a);
@@ -724,6 +741,7 @@ async function handle(req, res) {
 
   // GitHub OAuth — Device Flow
   if (p === '/api/git/oauth/start' && method === 'POST') {
+    ctx.route = '/api/git/oauth/start';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (!j.client_id) throw httpError(400, 'client_id required');
@@ -734,6 +752,7 @@ async function handle(req, res) {
   }
 
   if (p === '/api/git/oauth/poll' && method === 'POST') {
+    ctx.route = '/api/git/oauth/poll';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     const clientId = getSetting('git_oauth_client_id');
@@ -757,6 +776,7 @@ async function handle(req, res) {
   }
 
   if (p === '/api/git/oauth/status' && method === 'GET') {
+    ctx.route = '/api/git/oauth/status';
     return send(res, 200, {
       connected: !!getSetting('git_oauth_token'),
       login: getSetting('git_oauth_login') || null,
@@ -765,18 +785,21 @@ async function handle(req, res) {
   }
 
   if (p === '/api/git/oauth/revoke' && method === 'POST') {
+    ctx.route = '/api/git/oauth/revoke';
     db.prepare("DELETE FROM settings WHERE key IN ('git_oauth_token','git_oauth_login')").run();
     return send(res, 200, { ok: true });
   }
 
   // Google Drive config
   if (p === '/api/google/config' && method === 'GET') {
+    ctx.route = '/api/google/config';
     return send(res, 200, {
       clientId: getSetting('google_client_id') || '',
       apiKey: getSetting('google_api_key') || '',
     });
   }
   if (p === '/api/google/config' && method === 'POST') {
+    ctx.route = '/api/google/config';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (j.clientId !== undefined) setSetting('google_client_id', j.clientId.trim());
@@ -786,6 +809,7 @@ async function handle(req, res) {
 
   // Shareable standalone view
   if ((m = p.match(/^\/share\/([a-f0-9]{10})$/)) && method === 'GET') {
+    ctx.route = '/share/:id';
     const a = getArtifact(m[1]);
     if (!a) throw httpError(404, 'Artifact not found');
     const tagsHtml = a.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
@@ -832,8 +856,9 @@ async function handle(req, res) {
   }
 
   // Git sync
-  if (p === '/api/git/status' && method === 'GET') return send(res, 200, gitStatus());
+  if (p === '/api/git/status' && method === 'GET') { ctx.route = '/api/git/status'; return send(res, 200, gitStatus()); }
   if (p === '/api/git/config' && method === 'POST') {
+    ctx.route = '/api/git/config';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (j.remote !== undefined) setSetting('git_remote', j.remote.trim());
@@ -841,6 +866,7 @@ async function handle(req, res) {
     return send(res, 200, gitStatus());
   }
   if (p === '/api/git/sync' && method === 'POST') {
+    ctx.route = '/api/git/sync';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     return send(res, 200, gitSync(!!j.push));
@@ -850,7 +876,13 @@ async function handle(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  handle(req, res).catch((e) => {
+  const start = process.hrtime.bigint();
+  const ctx = {};
+  res.on('finish', () => {
+    const durationSeconds = Number(process.hrtime.bigint() - start) / 1e9;
+    recordRequest(req.method, ctx.route || 'unmatched', res.statusCode, durationSeconds);
+  });
+  handle(req, res, ctx).catch((e) => {
     const status = e.status || 500;
     if (status === 500) console.error(e);
     send(res, status, { error: e.message || 'Internal error' });
