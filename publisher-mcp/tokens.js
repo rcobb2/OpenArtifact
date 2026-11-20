@@ -17,6 +17,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+/**
+ * Demo mode. Lets the whole publish flow be explored without a Google OAuth
+ * client. Never set FOUNDRY_DEMO in a real deployment: linked accounts are
+ * fake and no Google call is ever made.
+ */
+const DEMO = /^(1|true|yes)$/i.test(process.env.FOUNDRY_DEMO || '');
+
 const DATA_DIR = process.env.TOKEN_DATA_DIR || '/data';
 const STORE_PATH = path.join(DATA_DIR, 'google-tokens.json');
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -63,6 +70,20 @@ const tokenStore = {
     return !!readStore()[email.toLowerCase()];
   },
 
+  /** Demo-only: mark an account linked without talking to Google. */
+  storeDemoLink(email) {
+    if (!DEMO) throw new Error('storeDemoLink requires FOUNDRY_DEMO=1');
+    const store = readStore();
+    store[email.toLowerCase()] = {
+      refresh_token: encrypt('demo-refresh-token'),
+      scope: 'https://www.googleapis.com/auth/script.projects https://www.googleapis.com/auth/script.deployments',
+      linked_at: new Date().toISOString(),
+      demo: true,
+    };
+    writeStore(store);
+    accessCache.delete(email.toLowerCase());
+  },
+
   /** Trade the authorization code for a refresh token and persist it. */
   async exchangeAndStore(email, code, { clientId, clientSecret, redirectUri }) {
     const resp = await fetch(TOKEN_URL, {
@@ -105,6 +126,10 @@ const tokenStore = {
 
     const entry = readStore()[key];
     if (!entry) return null;
+    if (entry.demo) {
+      if (!DEMO) return null; // a demo link must never work outside demo mode
+      return 'demo-access-token';
+    }
 
     const resp = await fetch(TOKEN_URL, {
       method: 'POST',

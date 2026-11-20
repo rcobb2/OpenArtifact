@@ -99,6 +99,10 @@ Reach-the-vault caveat: Claude Code, Cowork, and other locally-running environme
 
 ## Multi-user mode — Colgate App Foundry
 
+> **Just want to look at it?** `node demo/run.js` stands the whole thing up on
+> <http://localhost:4747> with a fake IdP — no Google or Entra app registrations, no Docker, no
+> config. See [`demo/README.md`](demo/README.md) for what's real and what's emulated.
+
 OpenArtifact also runs as a campus-wide gallery behind institutional SSO, indexing apps that are
 *deployed to* Google Apps Script or Power Platform rather than rendered here. Everything is
 opt-in by environment variable — with none of these set, nothing below changes and the vault
@@ -139,6 +143,7 @@ public/index.html  # entire frontend (single file)
 seed/              # sample artifacts imported on first run
 data/              # created at runtime: artifacts/<folders>/*.html + index.db
 
+demo/              # one-command local demo with a fake IdP (no registrations)
 deploy/            # Colgate App Foundry: Caddy + Dex + oauth2-proxy stack
 publisher-mcp/     # remote MCP server that deploys apps to campus runtimes
 plugin/            # Claude for Enterprise org plugin (skill + templates)

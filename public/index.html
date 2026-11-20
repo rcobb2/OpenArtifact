@@ -643,9 +643,15 @@ async function deleteFolderConfirm(node) {
   } catch (e) { toast(e.message, true); }
 }
 
+const countTree = (nodes) => nodes.reduce((n, f) => n + (f.count || 0) + countTree(f.children || []), 0);
+
 function renderFolders() {
   const list = $('#folderList');
   list.innerHTML = '';
+  if (state.me.multi_user) {
+    const total = state.folders.unsorted + countTree(state.folders.tree);
+    list.appendChild(folderRow({ id: '', name: 'All apps', count: total, children: [] }, 0, true));
+  }
   list.appendChild(folderRow({ id: 'root', name: 'Unsorted', count: state.folders.unsorted, children: [] }, 0, true));
   const walk = (nodes, depth) => {
     for (const n of nodes) {
@@ -672,7 +678,12 @@ function folderRow(node, depth, isRoot) {
       <button title="Rename">✎</button>
       <button class="del" title="Delete">✕</button>
     </span>`}`;
-  row.onclick = () => { state.folder = node.id; state.tag = null; $('#search').value = ''; state.q = ''; refresh(); };
+  row.onclick = () => {
+    state.folder = node.id; state.tag = null; state.mine = false;
+    $('#mineBtn').classList.remove('primary');
+    if (state.me.multi_user) $('#mineBtn').textContent = '\u25CE My apps';
+    $('#search').value = ''; state.q = ''; refresh();
+  };
   if (hasKids) {
     row.querySelector('.twisty').onclick = (e) => {
       e.stopPropagation();
@@ -728,6 +739,8 @@ async function refresh() {
 function renderViewTitle() {
   const el = $('#viewTitle');
   if (state.q) el.innerHTML = `Search results for “<b>${esc(state.q)}</b>” <span style="font-weight:400">(all folders)</span>`;
+  else if (state.mine) el.innerHTML = '<b>My apps</b>';
+  else if (state.folder === '') el.innerHTML = '<b>All apps</b> <span style="font-weight:400">(everything published to the Foundry)</span>';
   else if (state.folder === 'root') el.innerHTML = '<b>Unsorted</b>';
   else el.innerHTML = '🗀 <b>' + esc(folderPathName(state.folder) || 'Folder') + '</b>';
 }
@@ -792,7 +805,10 @@ function renderGrid(items) {
           ${a.kind === 'tsx' ? '<span class="kind-badge">TSX</span>' : ''}
           ${a.runtime && a.runtime !== 'static-preview'
             ? `<span class="runtime-badge ${esc(a.runtime)}">${esc(RUNTIME_LABEL[a.runtime] || a.runtime)}</span>` : ''}
-          <span>${fmtDate(a.created_at)}</span><span>${fmtSize(a.size)}</span>
+          <span>${fmtDate(a.created_at)}</span>
+          ${/* For a deployed app the stored bytes are a metadata stub, not the
+                app, so the size would be misleading. */ ''}
+          ${!a.runtime || a.runtime === 'static-preview' ? `<span>${fmtSize(a.size)}</span>` : ''}
           ${a.owner_email ? `<span class="owner">${esc(a.owner_email.split('@')[0])}</span>` : ''}
           ${a.scopes && a.scopes.length ? `<span class="scopes" title="${esc(a.scopes.join('\n'))}">${a.scopes.length} scope${a.scopes.length === 1 ? '' : 's'}</span>` : ''}
           ${state.q && a.folder_path ? `<span class="floc">🗀 ${esc(a.folder_path)}</span>` : ''}
@@ -895,6 +911,7 @@ async function loadMe() {
   $('#whoamiAdmin').hidden = !state.me.is_admin;
   $('#mineBtn').hidden = false;
   $('#mineBtn').textContent = '\u25CE My apps';
+  state.folder = '';   // a discovery gallery opens on everything, not on Unsorted
   if (!state.me.is_admin) {
     $('#gitBtn').hidden = true;
     $('#driveBtn').hidden = true;

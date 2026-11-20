@@ -9,7 +9,16 @@
  * client exists and the sequence has been run by hand once.
  */
 
+const crypto = require('node:crypto');
+
 const APPS_SCRIPT_LIVE = /^(1|true|yes)$/i.test(process.env.APPS_SCRIPT_LIVE || '');
+/**
+ * Demo mode: simulate the deployment so the end-to-end flow can be explored
+ * without a Google OAuth client. The manifest guardrails and file mapping
+ * below still run for real — only the four network calls are skipped.
+ * Never set FOUNDRY_DEMO in a real deployment.
+ */
+const DEMO = /^(1|true|yes)$/i.test(process.env.FOUNDRY_DEMO || '');
 const SCRIPT_API = 'https://script.googleapis.com/v1';
 
 /** Apps Script expects a specific file layout; map our filenames onto it. */
@@ -90,6 +99,20 @@ async function api(accessToken, method, path, body) {
 async function deployAppsScript({ accessToken, title, files }) {
   assertSafeManifest(files);
   const scriptFiles = toScriptFiles(files);
+
+  if (DEMO) {
+    // Shaped like a real Apps Script deployment, but nothing was deployed.
+    const scriptId = 'demo-' + crypto.randomBytes(12).toString('hex');
+    const deploymentId = 'AKfycb' + crypto.randomBytes(16).toString('base64url').slice(0, 26);
+    return {
+      scriptId,
+      deploymentId,
+      versionNumber: 1,
+      launchUrl: `https://script.google.com/a/macros/colgate.edu/s/${deploymentId}/exec`,
+      simulated: true,
+      fileCount: scriptFiles.length,
+    };
+  }
 
   if (!APPS_SCRIPT_LIVE) {
     throw new Error(

@@ -30,7 +30,8 @@ const { deployAppsScript, buildPowerAppsBundle } = require('./deploy.js');
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const FOUNDRY_HOST = process.env.FOUNDRY_HOST || 'localhost';
-const PUBLIC_BASE = `https://${FOUNDRY_HOST}`;
+const PUBLIC_SCHEME = process.env.PUBLIC_SCHEME || 'https';
+const PUBLIC_BASE = `${PUBLIC_SCHEME}://${FOUNDRY_HOST}`;
 const GALLERY = (process.env.GALLERY_INTERNAL_URL || 'http://openartifact:4747').replace(/\/$/, '');
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
 const DEX_ISSUER = (process.env.DEX_ISSUER || `${PUBLIC_BASE}/dex`).replace(/\/$/, '');
@@ -47,6 +48,9 @@ const GOOGLE_SCOPES = [
 ];
 
 const RUNTIMES = new Set(['apps-script', 'power-apps', 'static-preview']);
+
+/** Demo mode — see demo/README.md. Never set this in a real deployment. */
+const DEMO = /^(1|true|yes)$/i.test(process.env.FOUNDRY_DEMO || '');
 
 // ----------------------------------------------------------------- plumbing
 const json = (res, status, body, headers = {}) => {
@@ -230,7 +234,11 @@ async function callTool(name, args, user) {
     launchUrl = result.launchUrl;
     externalId = result.scriptId;
     deployStatus = 'deployed';
-    note = `Deployed to Apps Script as ${user.email}, domain-restricted, executing as the viewer.`;
+    note = result.simulated
+      ? `SIMULATED deployment (demo mode) — nothing was deployed to Google. In a real run this `
+        + `would be an Apps Script web app owned by ${user.email}, restricted to colgate.edu and `
+        + `executing as whoever opens it. ${result.fileCount} file(s) mapped onto the Apps Script layout.`
+      : `Deployed to Apps Script as ${user.email}, domain-restricted, executing as the viewer.`;
   } else if (runtime === 'power-apps') {
     const result = buildPowerAppsBundle({ title, files });
     deployStatus = 'pending';
@@ -384,6 +392,25 @@ async function handleGoogleLink(req, res, url, p) {
       `This page must be reached through ${esc(PUBLIC_BASE)} while signed in with a `
       + `@${esc(ALLOWED_DOMAIN)} account.`));
   }
+  if (p === '/link/google' && DEMO) {
+    // Stands in for the Google consent screen. No Google call is made.
+    if (url.searchParams.get('confirm') === '1') {
+      tokenStore.storeDemoLink(email);
+      return html(res, 200, page('Google account linked (simulated)',
+        `<b>${esc(email)}</b> can now publish to Apps Script from Claude.<br><br>`
+        + `This is demo mode: no Google OAuth happened and no real token was stored. `
+        + `In a real deployment this page is Google's own consent screen, requesting `
+        + `<code>script.projects</code> and <code>script.deployments</code> with `
+        + `<code>access_type=offline</code>.<br><br><a href="/">← Back to the gallery</a>`));
+    }
+    return html(res, 200, page('Link your Google account',
+      `Publishing to Apps Script needs a one-time Google consent, because the Apps Script `
+      + `API does not work with service accounts — deployment must act as you.<br><br>`
+      + `Signed in as <b>${esc(email)}</b>.<br><br>`
+      + `<a href="/link/google?confirm=1" style="display:inline-block;background:#fab283;color:#0d0d0d;`
+      + `padding:8px 16px;border-radius:3px;font-weight:700;text-decoration:none">Allow (simulated)</a>`));
+  }
+
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     return html(res, 503, page('Not configured',
       'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set on publisher-mcp.'));
@@ -464,7 +491,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  identity via  ${DEX_ISSUER} (aud: ${MCP_CLIENT_ID})`);
   console.log(`  gallery       ${GALLERY}`);
   if (!INTERNAL_API_TOKEN) console.warn('  WARNING: INTERNAL_API_TOKEN is unset — gallery writes will be rejected');
-  if (!GOOGLE_CLIENT_ID) console.warn('  WARNING: GOOGLE_CLIENT_ID is unset — Apps Script publishing is disabled');
+  if (!GOOGLE_CLIENT_ID && !DEMO) console.warn('  WARNING: GOOGLE_CLIENT_ID is unset — Apps Script publishing is disabled');
+  if (DEMO) console.warn('  *** FOUNDRY_DEMO=1 — deployments are SIMULATED. Never use in production. ***');
 });
 
 module.exports = { handle, callTool, TOOLS };
