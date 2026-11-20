@@ -1,0 +1,12 @@
+{
+  "name": "colgate-publisher-mcp",
+  "version": "0.1.0",
+  "description": "Colgate App Foundry publisher — remote MCP server that deploys Claude-generated apps to Google Apps Script / Power Platform as the requesting user.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "engines": { "node": ">=22.13" },
+  "license": "MIT"
+}

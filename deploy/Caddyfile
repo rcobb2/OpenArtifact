@@ -1,0 +1,104 @@
+# Colgate App Foundry — TLS edge.
+#
+# Three routes, in order: the OIDC broker, the MCP endpoint Claude talks to,
+# and everything else (the gallery) behind oauth2-proxy.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$FOUNDRY_HOST} {
+	encode zstd gzip
+
+	# ---------------------------------------------------------------------
+	# Identity headers are assertions the edge makes, never the client.
+	#
+	# oauth2-proxy sets X-Forwarded-Email / -User from the verified session,
+	# and the gallery trusts them (TRUST_PROXY_AUTH=1). If a browser were
+	# allowed to send its own, anyone could impersonate anyone — including an
+	# administrator — just by adding a request header. Strip them at the door,
+	# before any handler runs.
+	# ---------------------------------------------------------------------
+	request_header -X-Forwarded-Email
+	request_header -X-Forwarded-User
+	request_header -X-Forwarded-Preferred-Username
+	request_header -X-Forwarded-Groups
+	request_header -X-Auth-Request-Email
+	request_header -X-Auth-Request-User
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Dex OIDC broker: discovery, auth, token, connector callbacks.
+	#
+	# NOTE: `handle`, deliberately NOT `handle_path`. Dex derives every endpoint
+	# path from the path component of its `issuer` (https://HOST/dex), so it
+	# genuinely serves at /dex/... and expects that prefix to arrive intact.
+	# Stripping it (handle_path) breaks discovery with a 404 on
+	# /dex/.well-known/openid-configuration. Do not "simplify" this.
+	handle /dex* {
+		reverse_proxy dex:5556
+	}
+
+	# Remote MCP endpoint for Claude for Enterprise. Authenticated by the MCP
+	# server itself (Dex-issued bearer JWT), so it does not pass through
+	# oauth2-proxy — Claude is an API client, not a browser with a session.
+	# The OAuth metadata documents must be reachable unauthenticated for
+	# discovery to work.
+	handle /mcp* {
+		reverse_proxy publisher-mcp:8080
+	}
+
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy publisher-mcp:8080
+	}
+
+	# The Google account-linking flow lives on the MCP server but is driven by
+	# a browser, and it binds a Google refresh token to an identity — so it
+	# must be authenticated. oauth2-proxy's upstream is the gallery, not this
+	# service, so authenticate out-of-band with forward_auth and then proxy to
+	# publisher-mcp carrying the verified identity.
+	handle /link/* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			# Hand publisher-mcp the same header name the gallery reads.
+			copy_headers X-Auth-Request-Email>X-Forwarded-Email X-Auth-Request-User>X-Forwarded-User
+
+			# /oauth2/auth answers 401 for an unauthenticated caller; this is
+			# a browser, so send it to sign in rather than showing an error.
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/start?rd={scheme}://{host}{uri}
+			}
+		}
+		reverse_proxy publisher-mcp:8080
+	}
+
+	# Everything else: the gallery, plus oauth2-proxy's own /oauth2/* endpoints.
+	handle {
+		reverse_proxy oauth2-proxy:4180
+	}
+}
+
+# ---------------------------------------------------------------------------
+# TLS notes
+#
+# By default Caddy obtains a public certificate over ACME HTTP-01, which needs
+# inbound :80 reachable from the internet. Campus firewalls frequently block
+# that. Two alternatives:
+#
+#   1. DNS-01 — works behind a firewall, but needs a Caddy build with your DNS
+#      provider's module and an API credential. Replace the site block's TLS
+#      config with, e.g.:
+#          tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }
+#      and use a caddy image built with that plugin (xcaddy).
+#
+#   2. Internal CA — for a lab run on a host nobody else resolves. Add
+#      `tls internal` inside the site block. Browsers will warn unless the
+#      Caddy root is installed, and oauth2-proxy will reject the issuer's
+#      certificate unless that root is mounted into its trust store.
+# ---------------------------------------------------------------------------

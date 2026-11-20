@@ -155,6 +155,43 @@
     border-radius: 2px; padding: 0 6px; font-size: 10px; font-weight: 700; letter-spacing: .5px; flex: none;
   }
 
+  /* --- Colgate App Foundry: deployed apps run on a vendor runtime, so their
+         cards show a launch panel instead of a local sandboxed preview. --- */
+  .runtime-badge {
+    border-radius: 2px; padding: 0 6px; font-size: 10px; font-weight: 700;
+    letter-spacing: .5px; flex: none; border: 1px solid;
+  }
+  .runtime-badge.apps-script { background: rgba(104,169,122,.15); color: #68a97a; border-color: rgba(104,169,122,.35); }
+  .runtime-badge.power-apps  { background: rgba(110,152,214,.15); color: #6e98d6; border-color: rgba(110,152,214,.35); }
+  .launch-panel {
+    position: relative; aspect-ratio: 4 / 3; flex: none; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    background: linear-gradient(160deg, var(--panel-2), var(--panel)); border-bottom: 1px solid var(--border);
+  }
+  .launch-panel .glyph { font-size: 30px; line-height: 1; opacity: .8; }
+  .launch-panel .rt { font-size: 11px; color: var(--muted); letter-spacing: .5px; text-transform: uppercase; }
+  .launch-panel .launch-btn {
+    background: var(--accent); color: #0d0d0d; border: 0; border-radius: var(--radius);
+    padding: 6px 14px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none;
+  }
+  .launch-panel .launch-btn:hover { filter: brightness(1.1); }
+  .launch-panel .launch-note { font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 2px; padding: 4px 10px; }
+  .card-meta .owner { color: var(--muted); }
+  .card-meta .scopes { color: var(--muted); }
+  .deploy-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .deploy-dot.deployed { background: #68a97a; }
+  .deploy-dot.pending  { background: var(--accent); }
+  .deploy-dot.failed   { background: #d16d6d; }
+
+  /* signed-in identity chip */
+  #whoami {
+    display: none; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 10px; white-space: nowrap;
+  }
+  #whoami.on { display: flex; }
+  #whoami .dot { width: 6px; height: 6px; border-radius: 50%; background: #68a97a; flex: none; }
+  #whoami .admin { color: var(--accent); font-weight: 700; font-size: 10px; letter-spacing: .5px; }
+
   #empty { color: var(--muted); text-align: center; padding: 80px 20px; display: none; }
   #empty h2 { color: var(--text); font-weight: 600; }
 
@@ -289,9 +326,11 @@
 <header>
   <div class="logo"><span class="mark">▸</span>OpenArtifact <small>artifact vault</small></div>
   <input id="search" type="search" placeholder="Search all folders — title, notes, tags…">
+  <button class="btn" id="mineBtn" hidden>◉ My apps</button>
   <button class="btn" id="uploadBtn">⬆ Upload files</button>
   <button class="btn" id="driveBtn">☁ Drive</button>
   <button class="btn" id="gitBtn">⎇ Backup</button>
+  <div id="whoami"><span class="dot"></span><span id="whoamiName"></span><span class="admin" id="whoamiAdmin" hidden>ADMIN</span></div>
   <input type="file" id="filePicker" accept=".html,.htm,.tsx,.jsx,text/html" multiple hidden>
 </header>
 
@@ -457,6 +496,8 @@
 const $ = (s) => document.querySelector(s);
 const state = {
   q: '', tag: null, items: [], current: null,
+  me: { email: '', name: 'local', is_admin: true, multi_user: false },
+  mine: false,               // filter the grid to the signed-in user's own apps
   folder: 'root',            // 'root' = Unsorted (homepage) or a folder id
   folders: { unsorted: 0, tree: [] },
   collapsed: new Set(),
@@ -672,6 +713,7 @@ async function refresh() {
   if (state.q) params.set('q', state.q);
   else params.set('folder', state.folder);
   if (state.tag) params.set('tag', state.tag);
+  if (state.mine) { params.set('owner', 'me'); params.delete('folder'); }
   const [items, tags, folders] = await Promise.all([
     api('/api/artifacts?' + params), api('/api/tags'), api('/api/folders'),
   ]);
@@ -709,6 +751,31 @@ function renderTags(counts) {
   }
 }
 
+const RUNTIME_LABEL = { 'apps-script': 'APPS SCRIPT', 'power-apps': 'POWER APPS' };
+const RUNTIME_GLYPH = { 'apps-script': '🅖', 'power-apps': '🅜' };
+
+/**
+ * A deployed app's code runs on Google's or Microsoft's runtime, not here —
+ * there is nothing local to preview, and we hold only metadata plus a launch
+ * link. Show a launch panel instead of the sandboxed iframe.
+ */
+function topOfCard(a) {
+  if (!a.runtime || a.runtime === 'static-preview') {
+    return `<div class="preview">
+        <iframe loading="lazy" sandbox="allow-scripts" src="/raw/${a.id}" title="${esc(a.title)}"></iframe>
+        <div class="shield"></div>
+      </div>`;
+  }
+  const action = a.launch_url
+    ? `<a class="launch-btn" href="${esc(a.launch_url)}" target="_blank" rel="noopener noreferrer">Launch ↗</a>`
+    : `<span class="launch-note">${a.deploy_status === 'failed' ? 'Deploy failed' : 'Awaiting deployment'}</span>`;
+  return `<div class="launch-panel">
+      <div class="glyph">${RUNTIME_GLYPH[a.runtime] || '▸'}</div>
+      <div class="rt"><span class="deploy-dot ${esc(a.deploy_status || 'none')}"></span>${esc(RUNTIME_LABEL[a.runtime] || a.runtime)}</div>
+      ${action}
+    </div>`;
+}
+
 function renderGrid(items) {
   const grid = $('#grid');
   grid.innerHTML = '';
@@ -718,19 +785,23 @@ function renderGrid(items) {
     card.className = 'card';
     card.draggable = true;
     card.innerHTML = `
-      <div class="preview">
-        <iframe loading="lazy" sandbox="allow-scripts" src="/raw/${a.id}" title="${esc(a.title)}"></iframe>
-        <div class="shield"></div>
-      </div>
+      ${topOfCard(a)}
       <div class="card-body">
         <div class="card-title">${esc(a.title)}</div>
         <div class="card-meta">
           ${a.kind === 'tsx' ? '<span class="kind-badge">TSX</span>' : ''}
+          ${a.runtime && a.runtime !== 'static-preview'
+            ? `<span class="runtime-badge ${esc(a.runtime)}">${esc(RUNTIME_LABEL[a.runtime] || a.runtime)}</span>` : ''}
           <span>${fmtDate(a.created_at)}</span><span>${fmtSize(a.size)}</span>
+          ${a.owner_email ? `<span class="owner">${esc(a.owner_email.split('@')[0])}</span>` : ''}
+          ${a.scopes && a.scopes.length ? `<span class="scopes" title="${esc(a.scopes.join('\n'))}">${a.scopes.length} scope${a.scopes.length === 1 ? '' : 's'}</span>` : ''}
           ${state.q && a.folder_path ? `<span class="floc">🗀 ${esc(a.folder_path)}</span>` : ''}
         </div>
         ${a.tags.length ? `<div class="card-tags">${a.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
       </div>`;
+    // The Launch link opens the vendor runtime; don't also open the detail modal.
+    const launch = card.querySelector('.launch-btn');
+    if (launch) launch.addEventListener('click', (e) => e.stopPropagation());
     card.onclick = () => openModal(a);
     card.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/artifact-id', a.id);
@@ -810,7 +881,35 @@ $('#mDelete').onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 
-refresh();
+// ------------------------------------------------------- identity / Foundry
+/**
+ * In multi-user (Foundry) mode the gallery sits behind institutional SSO, so
+ * show who is signed in, offer a "my apps" filter, and hide the global
+ * admin-only controls the server would refuse anyway.
+ */
+async function loadMe() {
+  try { state.me = await api('/api/me'); } catch { return; }
+  if (!state.me.multi_user) return;
+  $('#whoami').classList.add('on');
+  $('#whoamiName').textContent = state.me.name || state.me.email;
+  $('#whoamiAdmin').hidden = !state.me.is_admin;
+  $('#mineBtn').hidden = false;
+  $('#mineBtn').textContent = '\u25CE My apps';
+  if (!state.me.is_admin) {
+    $('#gitBtn').hidden = true;
+    $('#driveBtn').hidden = true;
+    $('#newFolderBtn').hidden = true;
+  }
+}
+
+$('#mineBtn').onclick = () => {
+  state.mine = !state.mine;
+  $('#mineBtn').classList.toggle('primary', state.mine);
+  $('#mineBtn').textContent = (state.mine ? '\u25C9' : '\u25CE') + ' My apps';
+  refresh();
+};
+
+loadMe().then(refresh);
 
 // --------------------------------------------------------------- google drive
 const drive = { loaded: false, tokenClient: null, token: null, clientId: '', apiKey: '' };

@@ -73,7 +73,8 @@ Move artifacts by dragging a card onto a folder in the sidebar, or via the Folde
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/artifacts?q=&tag=&folder=` | List/search. `folder` = a folder id or `root` (unsorted); `q` searches across all folders |
+| GET | `/api/me` | The signed-in identity, admin flag, and whether multi-user mode is on |
+| GET | `/api/artifacts?q=&tag=&folder=&owner=&runtime=` | List/search. `folder` = a folder id or `root` (unsorted); `q` searches across all folders; `owner=me` or an email; `runtime` = `static-preview`/`apps-script`/`power-apps` |
 | POST | `/api/import` | **Universal import**: multipart file upload(s), JSON `{url}` or `{html}`, or raw `text/html` body; optional `title`, `tags`, `notes`, `folder_id` or `folder` path (auto-created) |
 | POST | `/api/artifacts` | Import (JSON `{html,title?,tags?,notes?,folder_id?}` or raw `text/html` body) |
 | POST | `/api/import-url` | Import from URL (`{"url":"https://…","folder_id?":…}`) — kept for back-compat; prefer `/api/import` |
@@ -96,17 +97,51 @@ Rendering happens in the same sandboxed iframe, via a wrapper page that transpil
 
 Reach-the-vault caveat: Claude Code, Cowork, and other locally-running environments can hit `http://localhost:4747` directly. claude.ai web chat (Chat/Projects/Dispatch) executes server-side and cannot reach your localhost — point the skill's `VAULT_URL` at a secure tunnel (Tailscale Funnel, Cloudflare Tunnel) if you want auto-save from the web app, and put auth in front before exposing the vault.
 
+## Multi-user mode — Colgate App Foundry
+
+OpenArtifact also runs as a campus-wide gallery behind institutional SSO, indexing apps that are
+*deployed to* Google Apps Script or Power Platform rather than rendered here. Everything is
+opt-in by environment variable — with none of these set, nothing below changes and the vault
+behaves exactly as described above.
+
+| Variable | Effect |
+|---|---|
+| `TRUST_PROXY_AUTH=1` | Read the signed-in identity from `X-Forwarded-Email` / `X-Forwarded-User`. Unauthenticated requests get `401`. |
+| `FOUNDRY_ADMINS` | Comma-separated emails allowed to change global settings (git backup, Drive config) and to rename or delete shared folders. |
+| `INTERNAL_API_TOKEN` | Lets the publisher MCP import on a user's behalf with `Authorization: Bearer …`; such requests must name an `owner_email`. |
+| `LAUNCH_URL_HOSTS` | Hosts a `launch_url` may point at. Default: `script.google.com,apps.powerapps.com,make.powerapps.com`. |
+| `ALLOW_PRIVATE_IMPORT=1` | Disable the SSRF guard on URL import (single-user vaults only). |
+
+`TRUST_PROXY_AUTH` is only sound behind a proxy that **strips client-supplied** `X-Forwarded-*`
+headers before forwarding; otherwise anyone can impersonate anyone by setting a request header.
+`deploy/Caddyfile` does this, and the gallery port is never published. Don't run this mode with
+the port exposed directly.
+
+Artifacts gain `runtime`, `launch_url`, `scopes`, `owner_email`, `deploy_status` and
+`external_id`. A card whose `runtime` isn't `static-preview` has no local code to render, so the
+gallery shows a launch panel and the requested-scope count instead of a sandboxed preview.
+`owner_email` is set once at creation from the authenticated identity and cannot be patched; only
+the owner or an admin may edit or delete an app. Existing vaults migrate automatically on startup.
+
+Full deployment instructions, IdP registration and troubleshooting: [`deploy/README.md`](deploy/README.md).
+
 ## Security model
 
-Artifacts are untrusted code. They render only inside `<iframe sandbox="allow-scripts">` (no `allow-same-origin`, so they run in an opaque origin with no access to the app, your cookies, or other artifacts). The `/raw/:id` endpoint additionally serves a `Content-Security-Policy: sandbox` header, so an artifact opened directly in a tab is still origin-isolated. The URL-import feature fetches whatever URL you give it from inside the container — it's intended for a trusted, local, single-user deployment; don't expose the port to the internet without adding auth.
+Artifacts are untrusted code. They render only inside `<iframe sandbox="allow-scripts">` (no `allow-same-origin`, so they run in an opaque origin with no access to the app, your cookies, or other artifacts). The `/raw/:id` endpoint additionally serves a `Content-Security-Policy: sandbox` header, so an artifact opened directly in a tab is still origin-isolated. The URL-import feature fetches URLs from inside the container, so it validates the destination before each request and on every redirect hop: hostnames are resolved and non-public addresses (loopback, RFC 1918, link-local, unique-local, carrier-grade NAT, cloud metadata) are refused. `ALLOW_PRIVATE_IMPORT=1` restores the old unrestricted behaviour for a trusted single-user vault.
+
+Beyond that, the stock configuration is still single-user and unauthenticated — don't expose the port to the internet without putting auth in front. See **Multi-user mode** below for the supported way to do that.
 
 ## Layout
 
 ```
-server.js          # entire backend (~400 lines, zero dependencies)
+server.js          # entire backend (zero dependencies)
 public/index.html  # entire frontend (single file)
 seed/              # sample artifacts imported on first run
 data/              # created at runtime: artifacts/<folders>/*.html + index.db
+
+deploy/            # Colgate App Foundry: Caddy + Dex + oauth2-proxy stack
+publisher-mcp/     # remote MCP server that deploys apps to campus runtimes
+plugin/            # Claude for Enterprise org plugin (skill + templates)
 ```
 
 Hack away — there's no build step.

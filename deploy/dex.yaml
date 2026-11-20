@@ -1,0 +1,76 @@
+# Dex — OIDC broker fronting Colgate's two identity providers.
+#
+# Dex expands $VAR / ${VAR} in this file at startup. The variables come from
+# the dex service's `env_file: .env` in docker-compose.yml; if that is missing
+# they expand to empty strings and sign-in fails with "invalid client".
+
+issuer: https://$FOUNDRY_HOST/dex
+
+storage:
+  type: sqlite3
+  config:
+    file: /var/dex/dex.db
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  # Both connectors are institutional, so the extra consent screen adds
+  # nothing. Dex still shows its own Google/Microsoft chooser.
+  skipApprovalScreen: true
+
+expiry:
+  idTokens: 12h
+  refreshTokens:
+    validIfNotUsedFor: 72h
+
+staticClients:
+  # 1. The gallery, via oauth2-proxy.
+  - id: oauth2-proxy
+    name: "Colgate App Foundry"
+    secret: $DEX_CLIENT_SECRET
+    redirectURIs:
+      - https://$FOUNDRY_HOST/oauth2/callback
+
+  # 2. Claude for Enterprise, for the remote MCP connector. Registered in
+  #    Claude under Organization settings > Connectors with the OAuth client
+  #    option "Use your own OAuth client" and this id/secret.
+  - id: claude-foundry
+    name: "Claude — Colgate App Foundry publisher"
+    secret: $CLAUDE_MCP_CLIENT_SECRET
+    redirectURIs:
+      - https://claude.ai/api/mcp/auth_callback
+
+connectors:
+  - type: google
+    id: google
+    name: "Colgate Google Workspace"
+    config:
+      clientID: $GOOGLE_CLIENT_ID
+      clientSecret: $GOOGLE_CLIENT_SECRET
+      # Dex's callback is always <issuer>/callback.
+      redirectURI: https://$FOUNDRY_HOST/dex/callback
+      # Rejects personal Gmail accounts during the handshake itself, so a
+      # non-Colgate account never reaches oauth2-proxy's domain check.
+      hostedDomains:
+        - colgate.edu
+      promptType: select_account
+
+  - type: microsoft
+    id: microsoft
+    name: "Colgate Microsoft Entra ID"
+    config:
+      clientID: $ENTRA_CLIENT_ID
+      clientSecret: $ENTRA_CLIENT_SECRET
+      # Pinning the tenant to Colgate's directory id restricts sign-in to
+      # institutional accounts; "common" or "organizations" would not.
+      tenant: $COLGATE_ENTRA_TENANT_ID
+      redirectURI: https://$FOUNDRY_HOST/dex/callback
+      # Skips Microsoft's account picker for people already signed in with a
+      # Colgate account. (Note: a hint, not an enforcement — `tenant` above is
+      # what actually restricts who may sign in.)
+      domainHint: colgate.edu
+      # Dex reads the email from Microsoft Graph /me (mail, falling back to
+      # userPrincipalName), so the app registration needs User.Read and the
+      # directory must actually populate one of them — see README.
+      emailToLowercase: true

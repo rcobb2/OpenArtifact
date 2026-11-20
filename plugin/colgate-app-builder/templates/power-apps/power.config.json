@@ -1,0 +1,8 @@
+{
+  "$schema": "https://aka.ms/power-apps-code-app-schema",
+  "name": "colgate-code-app",
+  "displayName": "Colgate Code App",
+  "description": "Replace with what this app does.",
+  "// connectors": "Added by `pa app add-data-source`; list each one in the Foundry scopes manifest.",
+  "connectors": []
+}

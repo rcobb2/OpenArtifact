@@ -13,6 +13,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const { spawnSync } = require('node:child_process');
+const dns = require('node:dns').promises;
+const net = require('node:net');
 const { recordRequest, renderMetrics } = require('./metrics.js');
 
 const PORT = parseInt(process.env.PORT || '4747', 10);
@@ -21,6 +23,29 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data
 const ARTIFACTS_DIR = path.join(DATA_DIR, 'artifacts');
 const SEED_DIR = path.join(__dirname, 'seed');
 const MAX_BODY = 20 * 1024 * 1024; // 20 MB
+
+// --- Colgate App Foundry configuration -------------------------------------
+// Every one of these is OFF by default: with no env set, OpenArtifact behaves
+// exactly as the single-user localhost vault it has always been.
+
+/** Trust X-Forwarded-Email / X-Forwarded-User from an authenticating proxy
+ *  (oauth2-proxy). Turns the vault into a multi-user gallery. */
+const TRUST_PROXY_AUTH = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY_AUTH || '');
+/** Comma-separated emails allowed to touch global vault settings. */
+const ADMINS = new Set((process.env.FOUNDRY_ADMINS || '')
+  .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+/** Shared secret for service-to-service ingestion (publisher-mcp -> gallery). */
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || '';
+/** Hosts a launch_url may point at. Deployed apps live on vendor runtimes. */
+const LAUNCH_HOSTS = new Set((process.env.LAUNCH_URL_HOSTS
+  || 'script.google.com,apps.powerapps.com,make.powerapps.com')
+  .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+/** Restore the old, unrestricted URL-import behaviour (localhost use only). */
+const ALLOW_PRIVATE_IMPORT = /^(1|true|yes)$/i.test(process.env.ALLOW_PRIVATE_IMPORT || '');
+
+const RUNTIMES = new Set(['static-preview', 'apps-script', 'power-apps']);
+const DEPLOY_STATES = new Set(['none', 'pending', 'deployed', 'failed']);
+const LOCAL_USER = { email: '', name: 'local', isAdmin: true, isService: false, anonymous: true };
 
 fs.mkdirSync(ARTIFACTS_DIR, { recursive: true });
 
@@ -47,10 +72,23 @@ db.exec(`
 `);
 db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 
-// migration for vaults created before folders existed
-if (!db.prepare('PRAGMA table_info(artifacts)').all().some((c) => c.name === 'folder_id')) {
-  db.exec('ALTER TABLE artifacts ADD COLUMN folder_id TEXT REFERENCES folders(id)');
+/** Add a column to `artifacts` if it isn't there yet. Idempotent, so every
+ *  startup safely migrates vaults created by any earlier version. */
+function ensureColumn(name, ddl) {
+  const cols = db.prepare('PRAGMA table_info(artifacts)').all();
+  if (!cols.some((c) => c.name === name)) db.exec(`ALTER TABLE artifacts ADD COLUMN ${ddl}`);
 }
+
+// migration for vaults created before folders existed
+ensureColumn('folder_id', 'folder_id TEXT REFERENCES folders(id)');
+
+// Foundry columns: where a published app actually runs, and who owns it.
+ensureColumn('runtime', "runtime TEXT NOT NULL DEFAULT 'static-preview'");
+ensureColumn('launch_url', 'launch_url TEXT NOT NULL DEFAULT \'\'');
+ensureColumn('scopes', "scopes TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('owner_email', 'owner_email TEXT NOT NULL DEFAULT \'\'');
+ensureColumn('deploy_status', "deploy_status TEXT NOT NULL DEFAULT 'none'");
+ensureColumn('external_id', 'external_id TEXT NOT NULL DEFAULT \'\'');
 
 // ----------------------------------------------------------------- helpers
 const newId = () => crypto.randomBytes(5).toString('hex');
@@ -157,6 +195,111 @@ function httpError(status, message) {
   const e = new Error(message);
   e.status = status;
   return e;
+}
+
+// -------------------------------------------------------------------- auth
+/**
+ * Resolve the caller.
+ *
+ * Multi-user mode (TRUST_PROXY_AUTH=1) reads the identity oauth2-proxy stamped
+ * on the request. That is only sound because the edge proxy strips any
+ * client-supplied X-Forwarded-Email/-User before forwarding — see
+ * deploy/Caddyfile. Never expose this port directly.
+ *
+ * A request bearing the INTERNAL_API_TOKEN is publisher-mcp acting on a user's
+ * behalf; it must name that user itself, since there is no browser session.
+ */
+function currentUser(req) {
+  if (INTERNAL_API_TOKEN) {
+    const auth = String(req.headers['authorization'] || '');
+    const m = /^Bearer\s+(.+)$/i.exec(auth);
+    if (m && crypto.timingSafeEqual(
+      crypto.createHash('sha256').update(m[1]).digest(),
+      crypto.createHash('sha256').update(INTERNAL_API_TOKEN).digest(),
+    )) {
+      return { email: '', name: 'publisher-mcp', isAdmin: true, isService: true, anonymous: false };
+    }
+  }
+  if (!TRUST_PROXY_AUTH) return LOCAL_USER;
+  const email = String(req.headers['x-forwarded-email'] || '').trim().toLowerCase();
+  if (!email) return null;
+  return {
+    email,
+    name: String(req.headers['x-forwarded-preferred-username'] || req.headers['x-forwarded-user'] || email).trim(),
+    isAdmin: ADMINS.has(email),
+    isService: false,
+    anonymous: false,
+  };
+}
+
+/** The caller, or a 401 if multi-user mode is on and nobody is signed in. */
+function requireUser(req) {
+  const u = currentUser(req);
+  if (!u) throw httpError(401, 'Not authenticated — this vault is behind institutional SSO');
+  return u;
+}
+
+function requireAdmin(req) {
+  const u = requireUser(req);
+  if (!u.isAdmin) throw httpError(403, 'Administrators only');
+  return u;
+}
+
+/** Owner or admin. Service calls act for a named owner and are checked there. */
+function canModify(user, artifact) {
+  if (user.isAdmin || user.anonymous) return true;
+  return !!artifact.owner_email && artifact.owner_email === user.email;
+}
+
+function assertCanModify(user, artifact) {
+  if (!canModify(user, artifact)) throw httpError(403, 'This app belongs to someone else');
+}
+
+/**
+ * Who should own something the caller is creating. A browser request owns it
+ * itself; publisher-mcp is acting for somebody and has to say who, since the
+ * service token carries no identity of its own.
+ */
+function ownerFor(user, payload = {}) {
+  if (user.isService) {
+    const email = String(payload.owner_email || '').trim().toLowerCase();
+    if (!email) throw httpError(400, 'owner_email is required on service-token imports');
+    return email;
+  }
+  return user.email;
+}
+
+/** A launch link must point at a known vendor runtime, never anywhere else —
+ *  otherwise a gallery card becomes an open redirect wearing a Colgate badge. */
+function normalizeLaunchUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  let u;
+  try { u = new URL(raw); } catch { throw httpError(400, 'launch_url is not a valid URL'); }
+  if (u.protocol !== 'https:') throw httpError(400, 'launch_url must be https://');
+  if (!LAUNCH_HOSTS.has(u.hostname.toLowerCase())) {
+    throw httpError(400, `launch_url host not allowed: ${u.hostname} (allowed: ${[...LAUNCH_HOSTS].join(', ')})`);
+  }
+  return u.toString();
+}
+
+function normalizeRuntime(value) {
+  const r = String(value ?? '').trim().toLowerCase() || 'static-preview';
+  if (!RUNTIMES.has(r)) throw httpError(400, `Unknown runtime: ${r} (expected ${[...RUNTIMES].join(', ')})`);
+  return r;
+}
+
+function normalizeDeployStatus(value) {
+  const d = String(value ?? '').trim().toLowerCase() || 'none';
+  if (!DEPLOY_STATES.has(d)) throw httpError(400, `Unknown deploy_status: ${d}`);
+  return d;
+}
+
+/** OAuth scope strings a deployed app requests, kept for the audit card. */
+function normalizeScopes(scopes) {
+  if (typeof scopes === 'string') scopes = scopes.split(/[\s,]+/);
+  if (!Array.isArray(scopes)) return [];
+  return [...new Set(scopes.map((t) => String(t).trim()).filter(Boolean))].slice(0, 64);
 }
 
 // ----------------------------------------------------------------- folders
@@ -314,14 +457,23 @@ function resolveFolderSpec({ folder_id, folder } = {}) {
 
 // --------------------------------------------------------------- artifacts
 function rowToArtifact(r) {
-  return r && { ...r, tags: JSON.parse(r.tags), folder_path: folderDisplayPath(r.folder_id), kind: artifactKind(r.filename) };
+  return r && {
+    ...r,
+    tags: JSON.parse(r.tags),
+    scopes: JSON.parse(r.scopes || '[]'),
+    folder_path: folderDisplayPath(r.folder_id),
+    kind: artifactKind(r.filename),
+  };
 }
 
 function getArtifact(id) {
   return rowToArtifact(db.prepare('SELECT * FROM artifacts WHERE id = ?').get(id));
 }
 
-function createArtifact({ html, title, tags = [], notes = '', source = '', folder_id = null, kind = null }) {
+function createArtifact({
+  html, title, tags = [], notes = '', source = '', folder_id = null, kind = null,
+  runtime = null, launch_url = '', scopes = [], owner_email = '', deploy_status = null, external_id = '',
+}) {
   if (typeof html !== 'string' || !html.trim()) throw httpError(400, 'Empty content');
   folder_id = folder_id || null;
   if (folder_id && !getFolder(folder_id)) throw httpError(404, 'Folder not found');
@@ -332,10 +484,15 @@ function createArtifact({ html, title, tags = [], notes = '', source = '', folde
   const filename = `${slugify(finalTitle)}-${id}.${kind === 'tsx' ? 'tsx' : 'html'}`;
   fs.writeFileSync(path.join(folderDiskPath(folder_id), filename), html, 'utf8');
   const now = new Date().toISOString();
-  db.prepare(`INSERT INTO artifacts (id, filename, title, tags, notes, source, size, folder_id, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO artifacts (id, filename, title, tags, notes, source, size, folder_id,
+                                     runtime, launch_url, scopes, owner_email, deploy_status, external_id,
+                                     created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, filename, finalTitle, JSON.stringify(normalizeTags(tags)), String(notes), String(source),
-         Buffer.byteLength(html), folder_id, now, now);
+         Buffer.byteLength(html), folder_id,
+         normalizeRuntime(runtime), normalizeLaunchUrl(launch_url), JSON.stringify(normalizeScopes(scopes)),
+         String(owner_email || '').trim().toLowerCase(), normalizeDeployStatus(deploy_status), String(external_id || ''),
+         now, now);
   return getArtifact(id);
 }
 
@@ -351,9 +508,11 @@ function moveArtifact(a, folderId) {
 
 /**
  * List artifacts. `folder` = 'root' (unsorted) or a folder id.
+ * `owner` filters to one email's apps (backs the MCP's list_my_foundry_apps);
+ * `runtime` filters to one deployment target.
  * When `q` is given, search spans ALL folders (folder filter is ignored).
  */
-function listArtifacts({ q, tag, folder } = {}) {
+function listArtifacts({ q, tag, folder, owner, runtime } = {}) {
   let rows;
   if (q) {
     const like = `%${q}%`;
@@ -369,22 +528,107 @@ function listArtifacts({ q, tag, folder } = {}) {
   }
   let list = rows.map(rowToArtifact);
   if (tag) list = list.filter((a) => a.tags.includes(String(tag).toLowerCase()));
+  if (owner) list = list.filter((a) => a.owner_email === String(owner).trim().toLowerCase());
+  if (runtime) list = list.filter((a) => a.runtime === String(runtime).trim().toLowerCase());
   return list;
 }
 
+// ---------------------------------------------------------------- SSRF guard
+// URL import makes the *server* fetch whatever it is given. On a single-user
+// laptop that is harmless. On a campus-facing deployment it is a hole straight
+// into the internal Docker network (http://openartifact:4747,
+// http://publisher-mcp:8080) and the cloud metadata endpoint. So: resolve the
+// host ourselves, refuse non-public addresses, and re-check on every redirect
+// hop — following redirects automatically would let a public host bounce us
+// inward after the first check passed.
+
+const PRIVATE_V4 = [
+  [[0, 0, 0, 0], 8], [[10, 0, 0, 0], 8], [[100, 64, 0, 0], 10], [[127, 0, 0, 0], 8],
+  [[169, 254, 0, 0], 16], [[172, 16, 0, 0], 12], [[192, 0, 0, 0], 24], [[192, 0, 2, 0], 24],
+  [[192, 88, 99, 0], 24], [[192, 168, 0, 0], 16], [[198, 18, 0, 0], 15], [[198, 51, 100, 0], 24],
+  [[203, 0, 113, 0], 24], [[224, 0, 0, 0], 4], [[240, 0, 0, 0], 4],
+];
+
+function v4IsPrivate(addr) {
+  const o = addr.split('.').map(Number);
+  if (o.length !== 4 || o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const ip = ((o[0] << 24) >>> 0) + (o[1] << 16) + (o[2] << 8) + o[3];
+  return PRIVATE_V4.some(([base, bits]) => {
+    const net = ((base[0] << 24) >>> 0) + (base[1] << 16) + (base[2] << 8) + base[3];
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return (ip & mask) >>> 0 === (net & mask) >>> 0;
+  });
+}
+
+function v6IsPrivate(addr) {
+  const a = addr.toLowerCase().split('%')[0];
+  if (a === '::' || a === '::1') return true;
+  if (/^f[cd]/.test(a)) return true;          // fc00::/7 unique-local
+  if (/^fe[89ab]/.test(a)) return true;       // fe80::/10 link-local
+  if (/^ff/.test(a)) return true;             // multicast
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (mapped) return v4IsPrivate(mapped[1]);
+  return false;
+}
+
+/** Resolve `hostname` and throw unless every address it answers with is public. */
+async function assertPublicHost(hostname) {
+  if (ALLOW_PRIVATE_IMPORT) return;
+  const host = hostname.replace(/^\[|\]$/g, '');
+  let addrs;
+  if (net.isIP(host)) {
+    addrs = [{ address: host, family: net.isIP(host) }];
+  } else {
+    try {
+      addrs = await dns.lookup(host, { all: true });
+    } catch (e) { throw httpError(400, `Cannot resolve host: ${host}`); }
+  }
+  if (!addrs.length) throw httpError(400, `Cannot resolve host: ${host}`);
+  for (const { address, family } of addrs) {
+    const priv = family === 6 ? v6IsPrivate(address) : v4IsPrivate(address);
+    if (priv) {
+      throw httpError(400,
+        `Refusing to fetch ${host} — it resolves to the non-public address ${address}. ` +
+        'Set ALLOW_PRIVATE_IMPORT=1 only on a trusted single-user vault.');
+    }
+  }
+}
+
+/** fetch() that validates the destination on every hop. */
+async function safeFetch(target, { maxRedirects = 5 } = {}) {
+  let url = new URL(target);
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw httpError(400, `Unsupported protocol: ${url.protocol}`);
+    }
+    await assertPublicHost(url.hostname);
+    const resp = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000),
+      headers: { 'User-Agent': 'OpenArtifact/1.0' },
+    });
+    if (resp.status < 300 || resp.status > 399 || !resp.headers.get('location')) return resp;
+    url = new URL(resp.headers.get('location'), url);
+  }
+  throw httpError(502, 'Too many redirects');
+}
+
 /** Fetch a URL and import the returned HTML (or TSX source) as an artifact. */
-async function importFromUrl(target, { title, tags, notes, folder_id, kind } = {}) {
+async function importFromUrl(target, { title, tags, notes, folder_id, kind, owner_email = '' } = {}) {
   if (!target || !/^https?:\/\//i.test(String(target))) throw httpError(400, 'Invalid or missing URL (must be http(s)://…)');
   let resp;
   try {
-    resp = await fetch(target, { redirect: 'follow', signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'OpenArtifact/1.0' } });
-  } catch (e) { throw httpError(502, `Fetch failed: ${e.message}`); }
+    resp = await safeFetch(target);
+  } catch (e) {
+    if (e.status) throw e;
+    throw httpError(502, `Fetch failed: ${e.message}`);
+  }
   if (!resp.ok) throw httpError(502, `Fetch failed: HTTP ${resp.status}`);
   const html = await resp.text();
   if (html.length > MAX_BODY) throw httpError(413, 'Fetched page too large');
   if (!kind && /\.(tsx|jsx)(\?|$)/i.test(target)) kind = 'tsx';
   if (!looksLikeHtml(html) && !looksLikeTsx(html) && kind !== 'tsx') throw httpError(422, 'URL did not return HTML or TSX content');
-  return createArtifact({ html, title, tags, notes, folder_id, kind, source: target });
+  return createArtifact({ html, title, tags, notes, folder_id, kind, owner_email, source: target });
 }
 
 /** Minimal multipart/form-data parser (buffers only, no deps). */
@@ -568,6 +812,23 @@ async function handle(req, res, ctx) {
   const p = url.pathname;
   const method = req.method === 'HEAD' ? 'GET' : req.method; // Node omits the body for HEAD automatically
 
+  // Everything below the edge proxy is authenticated; in single-user mode this
+  // resolves to a synthetic local owner and nothing changes.
+  const user = requireUser(req);
+  ctx.user = user.email || user.name;
+
+  // Who am I? Drives the frontend's identity chip and admin-only controls.
+  if (method === 'GET' && p === '/api/me') {
+    ctx.route = '/api/me';
+    return send(res, 200, {
+      email: user.email,
+      name: user.name,
+      is_admin: user.isAdmin,
+      multi_user: TRUST_PROXY_AUTH,
+      runtimes: [...RUNTIMES],
+    });
+  }
+
   // UI
   if (method === 'GET' && (p === '/' || p === '/index.html')) {
     ctx.route = '/';
@@ -577,10 +838,13 @@ async function handle(req, res, ctx) {
   // List / search
   if (method === 'GET' && p === '/api/artifacts') {
     ctx.route = '/api/artifacts';
+    const ownerParam = url.searchParams.get('owner');
     return send(res, 200, listArtifacts({
       q: url.searchParams.get('q'),
       tag: url.searchParams.get('tag'),
       folder: url.searchParams.get('folder'),
+      owner: ownerParam === 'me' ? (user.email || null) : ownerParam,
+      runtime: url.searchParams.get('runtime'),
     }));
   }
 
@@ -595,6 +859,8 @@ async function handle(req, res, ctx) {
   // Metrics (scraped by Prometheus; unauthenticated like everything else here)
   if (method === 'GET' && p === '/metrics') {
     ctx.route = '/metrics';
+    // Prometheus scrapes this over the internal network with the service token.
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     return send(res, 200, renderMetrics(), { 'Content-Type': 'text/plain; version=0.0.4' });
   }
 
@@ -608,11 +874,17 @@ async function handle(req, res, ctx) {
   let m;
   if ((m = p.match(/^\/api\/folders\/([a-f0-9]{10})$/))) {
     ctx.route = '/api/folders/:id';
+    // The folder tree is shared by the whole campus; renaming or deleting one
+    // moves everybody's files, so it is an administrator action.
     if (method === 'PATCH' || method === 'PUT') {
+      if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       return send(res, 200, updateFolder(m[1], body));
     }
-    if (method === 'DELETE') return send(res, 200, deleteFolder(m[1]));
+    if (method === 'DELETE') {
+      if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
+      return send(res, 200, deleteFolder(m[1]));
+    }
   }
 
   // Import: JSON {html,...} or raw HTML body
@@ -627,7 +899,7 @@ async function handle(req, res, ctx) {
     } else {
       payload = { html: body.toString('utf8'), source: 'raw-post' };
     }
-    return send(res, 201, createArtifact(payload));
+    return send(res, 201, createArtifact({ ...payload, owner_email: ownerFor(user, payload) }));
   }
 
   // Import from URL (kept for back-compat; /api/import is the universal endpoint)
@@ -635,7 +907,7 @@ async function handle(req, res, ctx) {
     ctx.route = '/api/import-url';
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
-    return send(res, 201, await importFromUrl(j.url, { folder_id: resolveFolderSpec(j) }));
+    return send(res, 201, await importFromUrl(j.url, { folder_id: resolveFolderSpec(j), owner_email: ownerFor(user, j) }));
   }
 
   // Universal import: multipart file upload, JSON {url|html}, or raw HTML body.
@@ -653,7 +925,12 @@ async function handle(req, res, ctx) {
       const fields = {};
       for (const pt of parts) if (!pt.filename) fields[pt.name] = pt.body.toString('utf8');
       const folderId = resolveFolderSpec(fields);
-      const common = { tags: fields.tags, notes: fields.notes ?? '', folder_id: folderId };
+      const common = {
+        tags: fields.tags, notes: fields.notes ?? '', folder_id: folderId,
+        owner_email: ownerFor(user, fields),
+        runtime: fields.runtime, launch_url: fields.launch_url ?? '',
+        scopes: fields.scopes, deploy_status: fields.deploy_status, external_id: fields.external_id ?? '',
+      };
       const files = parts.filter((pt) => pt.filename);
       for (const pt of files) {
         const html = pt.body.toString('utf8');
@@ -675,11 +952,18 @@ async function handle(req, res, ctx) {
       let j;
       try { j = JSON.parse(body.toString('utf8')); } catch { throw httpError(400, 'Invalid JSON'); }
       const folderId = resolveFolderSpec(j);
-      const common = { title: j.title, tags: j.tags, notes: j.notes ?? '', folder_id: folderId, kind: j.kind };
+      const common = {
+        title: j.title, tags: j.tags, notes: j.notes ?? '', folder_id: folderId, kind: j.kind,
+        owner_email: ownerFor(user, j),
+        runtime: j.runtime, launch_url: j.launch_url ?? '',
+        scopes: j.scopes, deploy_status: j.deploy_status, external_id: j.external_id ?? '',
+      };
       if (j.url) imported.push(await importFromUrl(j.url, common));
       else if (j.html) imported.push(createArtifact({ html: j.html, ...common, source: j.source || 'api-import' }));
     } else {
-      imported.push(createArtifact({ html: body.toString('utf8'), source: 'api-import' }));
+      imported.push(createArtifact({
+        html: body.toString('utf8'), source: 'api-import', owner_email: ownerFor(user, {}),
+      }));
     }
 
     if (!imported.length) {
@@ -698,17 +982,29 @@ async function handle(req, res, ctx) {
     if (method === 'GET') return send(res, 200, a);
 
     if (method === 'PATCH' || method === 'PUT') {
+      assertCanModify(user, a);
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+      // owner_email is set once, at creation, from the authenticated identity —
+      // letting it be patched would let anyone reassign authorship.
+      if ('owner_email' in body) throw httpError(400, 'owner_email cannot be changed after creation');
       if ('folder_id' in body) moveArtifact(a, body.folder_id);
       const title = 'title' in body ? String(body.title).trim() || a.title : a.title;
       const tags = 'tags' in body ? normalizeTags(body.tags) : a.tags;
       const notes = 'notes' in body ? String(body.notes) : a.notes;
-      db.prepare('UPDATE artifacts SET title=?, tags=?, notes=?, updated_at=? WHERE id=?')
-        .run(title, JSON.stringify(tags), notes, new Date().toISOString(), a.id);
+      const runtime = 'runtime' in body ? normalizeRuntime(body.runtime) : a.runtime;
+      const launchUrl = 'launch_url' in body ? normalizeLaunchUrl(body.launch_url) : a.launch_url;
+      const scopes = 'scopes' in body ? normalizeScopes(body.scopes) : a.scopes;
+      const deployStatus = 'deploy_status' in body ? normalizeDeployStatus(body.deploy_status) : a.deploy_status;
+      const externalId = 'external_id' in body ? String(body.external_id) : a.external_id;
+      db.prepare(`UPDATE artifacts SET title=?, tags=?, notes=?, runtime=?, launch_url=?,
+                                       scopes=?, deploy_status=?, external_id=?, updated_at=? WHERE id=?`)
+        .run(title, JSON.stringify(tags), notes, runtime, launchUrl,
+             JSON.stringify(scopes), deployStatus, externalId, new Date().toISOString(), a.id);
       return send(res, 200, getArtifact(a.id));
     }
 
     if (method === 'DELETE') {
+      assertCanModify(user, a);
       try { fs.unlinkSync(artifactDiskPath(a)); } catch { /* already gone */ }
       db.prepare('DELETE FROM artifacts WHERE id=?').run(a.id);
       return send(res, 200, { ok: true });
@@ -742,6 +1038,7 @@ async function handle(req, res, ctx) {
   // GitHub OAuth — Device Flow
   if (p === '/api/git/oauth/start' && method === 'POST') {
     ctx.route = '/api/git/oauth/start';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (!j.client_id) throw httpError(400, 'client_id required');
@@ -753,6 +1050,7 @@ async function handle(req, res, ctx) {
 
   if (p === '/api/git/oauth/poll' && method === 'POST') {
     ctx.route = '/api/git/oauth/poll';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     const clientId = getSetting('git_oauth_client_id');
@@ -777,6 +1075,7 @@ async function handle(req, res, ctx) {
 
   if (p === '/api/git/oauth/status' && method === 'GET') {
     ctx.route = '/api/git/oauth/status';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     return send(res, 200, {
       connected: !!getSetting('git_oauth_token'),
       login: getSetting('git_oauth_login') || null,
@@ -786,6 +1085,7 @@ async function handle(req, res, ctx) {
 
   if (p === '/api/git/oauth/revoke' && method === 'POST') {
     ctx.route = '/api/git/oauth/revoke';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     db.prepare("DELETE FROM settings WHERE key IN ('git_oauth_token','git_oauth_login')").run();
     return send(res, 200, { ok: true });
   }
@@ -793,6 +1093,9 @@ async function handle(req, res, ctx) {
   // Google Drive config
   if (p === '/api/google/config' && method === 'GET') {
     ctx.route = '/api/google/config';
+    // Non-admins get an empty config rather than a 403, so the UI simply hides
+    // the Drive button instead of erroring. The API key is not theirs to read.
+    if (TRUST_PROXY_AUTH && !user.isAdmin) return send(res, 200, { clientId: '', apiKey: '' });
     return send(res, 200, {
       clientId: getSetting('google_client_id') || '',
       apiKey: getSetting('google_api_key') || '',
@@ -800,6 +1103,7 @@ async function handle(req, res, ctx) {
   }
   if (p === '/api/google/config' && method === 'POST') {
     ctx.route = '/api/google/config';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (j.clientId !== undefined) setSetting('google_client_id', j.clientId.trim());
@@ -856,9 +1160,14 @@ async function handle(req, res, ctx) {
   }
 
   // Git sync
-  if (p === '/api/git/status' && method === 'GET') { ctx.route = '/api/git/status'; return send(res, 200, gitStatus()); }
+  if (p === '/api/git/status' && method === 'GET') {
+    ctx.route = '/api/git/status';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
+    return send(res, 200, gitStatus());
+  }
   if (p === '/api/git/config' && method === 'POST') {
     ctx.route = '/api/git/config';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     if (j.remote !== undefined) setSetting('git_remote', j.remote.trim());
@@ -867,6 +1176,7 @@ async function handle(req, res, ctx) {
   }
   if (p === '/api/git/sync' && method === 'POST') {
     ctx.route = '/api/git/sync';
+    if (TRUST_PROXY_AUTH && !user.isAdmin) throw httpError(403, 'Administrators only');
     let j = {};
     try { j = JSON.parse((await readBody(req)).toString('utf8')); } catch { /* noop */ }
     return send(res, 200, gitSync(!!j.push));

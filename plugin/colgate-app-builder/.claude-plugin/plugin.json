@@ -1,0 +1,15 @@
+{
+  "name": "colgate-app-builder",
+  "version": "0.1.0",
+  "description": "Build Colgate line-of-business apps in Claude and publish them to Google Apps Script or Power Platform, indexed in the Colgate App Foundry gallery.",
+  "author": {
+    "name": "Colgate University ITS"
+  },
+  "homepage": "https://foundry.colgate.edu",
+  "mcpServers": {
+    "colgate-foundry": {
+      "type": "http",
+      "url": "https://foundry.colgate.edu/mcp"
+    }
+  }
+}

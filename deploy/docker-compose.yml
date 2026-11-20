@@ -1,0 +1,153 @@
+# Colgate App Foundry — full stack.
+#
+#   Browser ──TLS──> caddy ──> oauth2-proxy ──> openartifact
+#                      │            └──> dex ──> Google Workspace / Entra ID
+#                      └──/mcp──> publisher-mcp
+#
+# Only caddy publishes ports. Everything else is reachable solely on the
+# internal bridge, so the gallery cannot be hit without passing through SSO.
+#
+# Copy .env.example to .env and fill it in before `docker compose up -d`.
+
+name: colgate-app-foundry
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      FOUNDRY_HOST: "${FOUNDRY_HOST:?set FOUNDRY_HOST in .env}"
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      foundry_net:
+        aliases:
+          # oauth2-proxy must reach its own issuer URL
+          # (https://$FOUNDRY_HOST/dex) to fetch OIDC discovery and the JWKS.
+          # Without this alias that name resolves to the public IP and the
+          # request has to hairpin back through the edge firewall, which most
+          # campus networks drop. The alias points the name at Caddy directly
+          # on the internal bridge; the public certificate still validates
+          # because the hostname is unchanged.
+          - "${FOUNDRY_HOST:?}"
+    depends_on:
+      - oauth2-proxy
+      - dex
+      - publisher-mcp
+
+  dex:
+    image: ghcr.io/dexidp/dex:v2.44.0
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    # Dex expands $VAR / ${VAR} in its config file at startup, so the secrets
+    # referenced by dex.yaml have to be present in ITS environment — not just
+    # in the Compose file's. Without this they silently expand to empty strings
+    # and every sign-in fails with an opaque "invalid client" error.
+    env_file: .env
+    volumes:
+      - ./dex.yaml:/etc/dex/config.yaml:ro
+      - dex_data:/var/dex
+    expose:
+      - "5556"
+    networks:
+      - foundry_net
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.13.0
+    restart: unless-stopped
+    environment:
+      OAUTH2_PROXY_PROVIDER: "oidc"
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: "Colgate University SSO"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: "https://${FOUNDRY_HOST}/dex"
+      OAUTH2_PROXY_REDIRECT_URL: "https://${FOUNDRY_HOST}/oauth2/callback"
+      OAUTH2_PROXY_CLIENT_ID: "oauth2-proxy"
+      OAUTH2_PROXY_CLIENT_SECRET: "${DEX_CLIENT_SECRET:?}"
+      OAUTH2_PROXY_COOKIE_SECRET: "${COOKIE_SECRET:?}"   # 32 raw bytes, base64url
+      OAUTH2_PROXY_EMAIL_DOMAINS: "colgate.edu"
+      OAUTH2_PROXY_UPSTREAMS: "http://openartifact:4747"
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_SCOPE: "openid email profile"
+      OAUTH2_PROXY_OIDC_EMAIL_CLAIM: "email"
+      # Required when running behind another proxy: without it oauth2-proxy
+      # ignores X-Forwarded-Proto and builds http:// redirect URLs.
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: "lax"
+      OAUTH2_PROXY_COOKIE_EXPIRE: "12h"
+      # Stamp the identity the gallery reads (TRUST_PROXY_AUTH=1).
+      OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
+      OAUTH2_PROXY_PASS_USER_HEADERS: "true"
+      # Dex itself renders the Google/Microsoft chooser, so skip oauth2-proxy's
+      # own interstitial button and go straight there.
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+    expose:
+      - "4180"
+    depends_on:
+      - dex
+      - openartifact
+    networks:
+      - foundry_net
+
+  openartifact:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "4747"
+    environment:
+      PORT: "4747"
+      # Trust the identity oauth2-proxy stamps on each request. Sound only
+      # because Caddy strips any client-supplied X-Forwarded-* first.
+      TRUST_PROXY_AUTH: "1"
+      FOUNDRY_ADMINS: "${FOUNDRY_ADMINS:-}"
+      INTERNAL_API_TOKEN: "${PUBLISHER_INTERNAL_TOKEN:?}"
+      LAUNCH_URL_HOSTS: "${LAUNCH_URL_HOSTS:-script.google.com,apps.powerapps.com,make.powerapps.com}"
+    volumes:
+      - gallery_data:/data
+    networks:
+      - foundry_net
+
+  publisher-mcp:
+    build: ../publisher-mcp
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      PORT: "8080"
+      FOUNDRY_HOST: "${FOUNDRY_HOST:?}"
+      GALLERY_INTERNAL_URL: "http://openartifact:4747"
+      INTERNAL_API_TOKEN: "${PUBLISHER_INTERNAL_TOKEN:?}"
+      # Identity: Claude's bearer is a Dex-issued JWT, validated against the
+      # Dex JWKS. See publisher-mcp/README.md.
+      DEX_ISSUER: "https://${FOUNDRY_HOST}/dex"
+      MCP_CLIENT_ID: "claude-foundry"
+      ALLOWED_EMAIL_DOMAIN: "colgate.edu"
+      # Capability: a separate Google consent, because Dex cannot mint
+      # Apps Script scopes.
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      TOKEN_ENCRYPTION_KEY: "${TOKEN_ENCRYPTION_KEY:?}"
+    volumes:
+      - publisher_data:/data
+    depends_on:
+      - openartifact
+    networks:
+      - foundry_net
+
+volumes:
+  caddy_data:
+  caddy_config:
+  dex_data:
+  gallery_data:
+  publisher_data:
+
+networks:
+  foundry_net:
+    driver: bridge
